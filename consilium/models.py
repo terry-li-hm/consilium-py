@@ -25,7 +25,7 @@ GOOGLE_AI_STUDIO_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 # Format: (name, openrouter_model, fallback) - fallback is (provider, model) or None
 COUNCIL = [
     ("GPT", "openai/gpt-5.2-pro", None),
-    ("Gemini", "google/gemini-3-pro-preview", ("google", "gemini-2.5-pro")),
+    ("Gemini", "google/gemini-3.1-pro-preview", ("google", "gemini-2.5-pro")),
     ("Grok", "x-ai/grok-4", None),
     ("DeepSeek", "deepseek/deepseek-r1", None),
     ("GLM", "z-ai/glm-5", None),
@@ -34,7 +34,7 @@ COUNCIL = [
 # Claude is judge-only (not in council) to avoid conflict of interest
 JUDGE_MODEL = "anthropic/claude-opus-4-6"
 # Critique model for CollabEval phase 2 (strongest analytical reasoner, not Claude)
-CRITIQUE_MODEL = "google/gemini-3-pro-preview"
+CRITIQUE_MODEL = "google/gemini-3.1-pro-preview"
 # Classification model for auto-routing — Opus for accuracy since this gates mode selection
 CLASSIFIER_MODEL = JUDGE_MODEL
 
@@ -55,7 +55,7 @@ OXFORD_MODELS = COUNCIL[:2]  # GPT, Gemini
 THINKING_MODEL_SUFFIXES = {
     "claude-opus-4-6", "claude-opus-4.5",
     "gpt-5.2-pro", "gpt-5.2",
-    "gemini-3-pro-preview",
+    "gemini-3.1-pro-preview",
     "grok-4",
     "deepseek-r1",
     "glm-5",
