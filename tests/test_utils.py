@@ -185,8 +185,8 @@ class TestIsThinkingModel:
     """Tests for is_thinking_model function."""
 
     def test_gemini_3_pro(self):
-        """Gemini 3 Pro is thinking model."""
-        assert is_thinking_model("google/gemini-3-pro-preview")
+        """Gemini 3.1 Pro is thinking model."""
+        assert is_thinking_model("google/gemini-3.1-pro-preview")
 
     def test_deepseek_r1(self):
         """DeepSeek R1 is thinking model."""
@@ -210,7 +210,7 @@ class TestIsThinkingModel:
 
     def test_slug_path(self):
         """Handles full path strings."""
-        assert is_thinking_model("provider/model/gemini-3-pro-preview")
+        assert is_thinking_model("provider/model/gemini-3.1-pro-preview")
 
     def test_claude_sonnet_not_thinking(self):
         """Claude Sonnet is not thinking model."""

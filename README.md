@@ -10,9 +10,9 @@ Inspired by [Andrej Karpathy's LLM Council](https://github.com/karpathy/llm-coun
 
 **Council (deliberators):**
 - GPT (gpt-5.2-pro)
-- Gemini (gemini-3-pro-preview)
+- Gemini (gemini-3.1-pro-preview)
 - Grok (grok-4)
-- Kimi (kimi-k2.5)
+- GLM (glm-5)
 
 **Judge:** Claude Opus 4.6 (synthesizes + adds own perspective)
 
