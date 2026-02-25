@@ -82,7 +82,6 @@ All sessions are auto-saved to `~/.consilium/sessions/` for later review.
 | `--challenger MODEL` | Which model starts as challenger (gpt/gemini/grok/kimi). Rotates each round. |
 | `--domain DOMAIN` | Regulatory domain context (banking, healthcare, eu, fintech, bio) |
 | `--followup` | Enable interactive drill-down after judge synthesis |
-| `--practical` | Actionable rules only, no philosophy |
 | `--quiet` | Suppress progress output |
 | `--sessions` | List recent saved sessions |
 | `--no-save` | Don't auto-save transcript to ~/.consilium/sessions/ |
