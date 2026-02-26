@@ -135,7 +135,7 @@ def run_oxford(
     async def _run_constructives():
         async with httpx.AsyncClient(
             headers={"Authorization": f"Bearer {api_key}"},
-            timeout=180.0,
+            timeout=300.0,
         ) as client:
             async def _prop():
                 result = await query_model_async(
@@ -204,7 +204,7 @@ def run_oxford(
     async def _run_rebuttals():
         async with httpx.AsyncClient(
             headers={"Authorization": f"Bearer {api_key}"},
-            timeout=180.0,
+            timeout=300.0,
         ) as client:
             async def _prop():
                 result = await query_model_async(
@@ -270,7 +270,7 @@ def run_oxford(
     async def _run_closings():
         async with httpx.AsyncClient(
             headers={"Authorization": f"Bearer {api_key}"},
-            timeout=180.0,
+            timeout=300.0,
         ) as client:
             async def _prop():
                 result = await query_model_async(

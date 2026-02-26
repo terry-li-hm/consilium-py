@@ -115,7 +115,7 @@ def run_solo(
 
         async with httpx.AsyncClient(
             headers={"Authorization": f"Bearer {api_key}"},
-            timeout=180.0,
+            timeout=300.0,
         ) as client:
             tasks = [
                 _query_and_print(i, name, client)

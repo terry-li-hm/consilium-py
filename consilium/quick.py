@@ -19,6 +19,7 @@ async def _run_quick_streaming(
     max_tokens: int = 2000,
     cost_accumulator: list[float] | None = None,
     verbose: bool = True,
+    timeout: float = 300.0,
 ) -> list[tuple[str, str, str]]:
     """Query models via parallel SSE streams and display sequentially."""
     messages = [{"role": "user", "content": question}]
@@ -134,7 +135,7 @@ async def _run_quick_streaming(
 
     async with httpx.AsyncClient(
         headers={"Authorization": f"Bearer {api_key}"},
-        timeout=180.0,
+        timeout=timeout,
     ) as client:
         tasks = [asyncio.create_task(_stream_with_fallback(state, client)) for state in states]
 
@@ -179,6 +180,7 @@ def run_quick(
     google_api_key: str | None = None,
     verbose: bool = True,
     format: str = "prose",
+    timeout: float = 300.0,
 ) -> SessionResult:
     """Run quick mode: parallel queries, no debate, no judge. Returns SessionResult."""
     start_time = time.time()
@@ -191,7 +193,7 @@ def run_quick(
     results = asyncio.run(_run_quick_streaming(
         question, models, api_key, google_api_key,
         max_tokens=4000, cost_accumulator=cost_accumulator,
-        verbose=verbose,
+        verbose=verbose, timeout=timeout,
     ))
 
     duration = time.time() - start_time

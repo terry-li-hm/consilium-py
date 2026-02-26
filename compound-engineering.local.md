@@ -1,0 +1,1 @@
+/Users/terry/agent-config/claude/compound-engineering/consilium.local.md

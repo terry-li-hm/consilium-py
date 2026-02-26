@@ -263,6 +263,8 @@ Session management:
     parser.add_argument("--tui", action="store_true", help="Watch live council output (TUI with phase/cost tracking)")
     parser.add_argument("--view", nargs="?", const="latest", default=None, metavar="TERM", help="View a session in pager")
     parser.add_argument("--search", metavar="TERM", help="Search session content")
+    parser.add_argument("--timeout", type=float, default=300.0, metavar="SECS",
+                        help="Per-model timeout in seconds (default: 300)")
     parser.add_argument("--no-judge", action="store_true",
                         help="Skip judge synthesis (for external judge integration)")
     args = parser.parse_args()
@@ -567,6 +569,7 @@ Session management:
                 google_api_key=google_api_key,
                 verbose=not args.quiet,
                 format=args.output_format,
+                timeout=args.timeout,
             )
 
             _finish_session(args, args.question, result, "quick",

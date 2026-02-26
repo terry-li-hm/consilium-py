@@ -130,7 +130,7 @@ def query_model(
     """Query a model via OpenRouter with retry logic for flaky models."""
     if is_thinking_model(model):
         max_tokens = max(max_tokens, 2500)
-        timeout = max(timeout, 180.0)
+        timeout = max(timeout, 300.0)
 
     if stream:
         result = query_model_streaming(api_key, model, messages, max_tokens, timeout, cost_accumulator=cost_accumulator)
@@ -520,7 +520,7 @@ async def run_parallel(
 
     async with httpx.AsyncClient(
         headers={"Authorization": f"Bearer {api_key}"},
-        timeout=180.0,
+        timeout=300.0,
     ) as client:
         tasks = [
             _query_and_print(i, name, model, fallback, client)
