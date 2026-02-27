@@ -28,6 +28,7 @@ from .prompts import (
     COUNCIL_DEBATE_SYSTEM,
     COUNCIL_CHALLENGER_ADDITION,
     COUNCIL_SOCIAL_CONSTRAINT,
+    COUNCIL_XPOL_SYSTEM,
 )
 
 
@@ -148,6 +149,57 @@ Factor this into your advice — don't just give strategically optimal answers, 
     return blind_claims
 
 
+async def run_xpol_phase_parallel(
+    question: str,
+    blind_claims: list[tuple[str, str, str]],
+    council_config: list[tuple[str, str, tuple[str, str] | None]],
+    api_key: str,
+    google_api_key: str | None = None,
+    verbose: bool = True,
+    persona: str | None = None,
+    domain_context: str = "",
+    cost_accumulator: list[float] | None = None,
+) -> list[tuple[str, str, str]]:
+    """Cross-pollination: each model reads all blind claims and investigates gaps."""
+    xpol_system = COUNCIL_XPOL_SYSTEM
+
+    if domain_context:
+        xpol_system += f"\n\nDOMAIN CONTEXT: {domain_context}\n\nApply this regulatory domain context to your analysis."
+
+    if persona:
+        xpol_system += f"\n\nIMPORTANT CONTEXT about the person asking:\n{persona}\n\nFactor this into your advice."
+
+    if verbose:
+        print("=" * 60)
+        print("CROSS-POLLINATION PHASE (extend, don't argue)")
+        print("=" * 60)
+        print()
+
+    blind_summary = "\n\n".join(
+        f"**Speaker {i+1}**: {claims}" for i, (_, _, claims) in enumerate(blind_claims)
+        if not is_error_response(claims)
+    )
+
+    messages = [
+        {"role": "system", "content": xpol_system},
+        {"role": "user", "content": f"Question:\n\n{question}\n\n---\n\nBLIND CLAIMS from all speakers:\n\n{blind_summary}"},
+    ]
+
+    if verbose:
+        print("(querying all models in parallel...)")
+
+    xpol_results = await run_parallel(
+        council_config, messages, api_key, google_api_key,
+        cost_accumulator=cost_accumulator,
+        verbose=verbose,
+    )
+
+    if verbose:
+        print()
+
+    return xpol_results
+
+
 def run_followup_discussion(
     question: str,
     topic: str,
@@ -252,6 +304,7 @@ def run_council(
     collabeval: bool = True,
     judge: bool = True,
     sub_questions: list[str] | None = None,
+    cross_pollinate: bool = False,
 ) -> SessionResult:
     """Run the council deliberation. Returns SessionResult."""
 
@@ -324,6 +377,34 @@ def run_council(
             blind_lines.append(f"\n*Note: {valid_blind_count} of {len(blind_claims)} models responded in blind phase.*")
         blind_context = "\n\n".join(blind_lines)
 
+    # Cross-pollination phase: each model reads all blind claims and extends
+    xpol_claims = []
+    xpol_context = ""
+    if cross_pollinate and blind_claims:
+        xpol_claims = asyncio.run(run_xpol_phase_parallel(
+            question,
+            blind_claims,
+            council_config,
+            api_key,
+            google_api_key,
+            verbose,
+            persona,
+            domain_context,
+            cost_accumulator=cost_accumulator,
+        ))
+        for name, model_name, claims in xpol_claims:
+            if claims.startswith("["):
+                failed_models.append(f"{model_name} (xpol): {claims}")
+            output_parts.append(f"### {model_name} (cross-pollination)\n{claims}")
+
+        xpol_lines = []
+        for name, _, claims in xpol_claims:
+            dname = display_names[name]
+            if not is_error_response(claims):
+                xpol_lines.append(f"**{dname}** (cross-pollination): {sanitize_speaker_content(claims)}")
+        if xpol_lines:
+            xpol_context = "\n\n".join(xpol_lines)
+
     for round_num in range(rounds):
         current_round = round_num + 1
         round_speakers = []
@@ -376,6 +457,8 @@ Factor this into your advice — don't just give strategically optimal answers, 
             user_content = f"Question for the council:\n\n{question}"
             if blind_context:
                 user_content += f"\n\n---\n\nBLIND CLAIMS (independent initial positions):\n\n{blind_context}"
+            if xpol_context:
+                user_content += f"\n\n---\n\nCROSS-POLLINATION (gap analysis after reading blind claims):\n\n{xpol_context}"
 
             messages = [
                 {"role": "system", "content": system_prompt},

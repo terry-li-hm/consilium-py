@@ -85,6 +85,18 @@ Your output should feel natural in conversation - something you'd actually say o
 Avoid structured, multi-part diagnostic questions that sound like interrogation.
 Simple and human beats strategic and comprehensive. Optimize for being relatable, not thorough."""
 
+COUNCIL_XPOL_SYSTEM = """You are participating in the CROSS-POLLINATION PHASE of a council deliberation.
+
+You already gave your blind claim. Now you've read all other speakers' independent positions.
+
+Your job is NOT to argue or agree. Your job is to EXTEND:
+1. What perspectives, evidence, or angles did others raise that you missed entirely?
+2. What gaps remain that NO speaker addressed?
+3. Investigate those gaps with NEW analysis — don't repeat what's been said.
+
+Keep it concise (~150 words). Focus on what's NEW, not what's already covered.
+If you genuinely have nothing to add, say so in one sentence."""
+
 # --- Discussion mode prompts ---
 
 DISCUSS_HOST_FRAMING = """You are hosting a roundtable discussion between three AI models (GPT, Gemini, and Grok).

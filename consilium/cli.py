@@ -244,6 +244,7 @@ Session management:
     parser.add_argument("--challenger", help="Which model should argue contrarian")
     parser.add_argument("--followup", action="store_true", help="Enable followup mode after judge synthesis")
     parser.add_argument("--decompose", action="store_true", help="Decompose complex question into sub-questions before deliberation")
+    parser.add_argument("--xpol", action="store_true", help="Cross-pollination: second parallel pass where models investigate gaps in each other's blind claims")
     parser.add_argument("--no-save", action="store_true", help="Don't auto-save transcript")
     parser.add_argument("--quick", action="store_true", help="Quick mode: parallel queries, no debate/judge")
     parser.add_argument("--council", action="store_true", help="Full council: skip auto-routing, always run debate + judge")
@@ -771,6 +772,7 @@ Session management:
             collabeval=use_collabeval,
             judge=not args.no_judge,
             sub_questions=sub_questions,
+            cross_pollinate=args.xpol,
         )
 
         transcript = result.transcript
@@ -797,7 +799,7 @@ Session management:
                 transcript += "\n\n" + followup_transcript
 
         _mode_prefix = "deep, " if _is_deep else ""
-        mode_label = f"{_mode_prefix}anonymous, blind{', social' if social_mode else ''}{f', auto-routed' if auto_mode else ''}{', collabeval' if use_collabeval else ''}{', no-judge' if args.no_judge else ''}"
+        mode_label = f"{_mode_prefix}anonymous, blind{', xpol' if args.xpol else ''}{', social' if social_mode else ''}{f', auto-routed' if auto_mode else ''}{', collabeval' if use_collabeval else ''}{', no-judge' if args.no_judge else ''}"
         header_lines = f"**Mode:** {mode_label}"
         if args.context:
             header_lines += f"\n**Context:** {args.context}"
