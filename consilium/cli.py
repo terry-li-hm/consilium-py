@@ -20,6 +20,9 @@ MODE_TITLES = {
     "solo": "Solo Council",
     "council": "Council Deliberation",
     "deep": "Deep Council",
+    "forecast": "Forecast",
+    "premortem": "Pre-Mortem",
+    "debate": "Multi-Round Debate",
 }
 
 
@@ -184,6 +187,9 @@ def _finish_session(
         history_extra["failures"] = result.failures
     _log_history(question, mode, session_path, gist_url, history_extra,
         cost=result.cost, duration=result.duration)
+    # In piped mode, print only the session path (machine-readable)
+    if getattr(args, '_piped_mode', False) and session_path:
+        print(session_path)
     sys.exit(0)
 
 
@@ -214,6 +220,9 @@ Modes:
   --oxford    Binary for/against with rebuttals + verdict (~$0.40)
   --redteam   Adversarial stress-test of a plan (~$0.20)
   --solo      Claude debates itself in multiple roles (~$0.40)
+  --forecast  Superforecasting: blind probs + reconciliation (~$0.20)
+  --premortem Pre-mortem: assume failure, reason backward (~$0.20)
+  --debate    Multi-round cross-critique + synthesis (~$0.30)
 
 Examples:
   consilium "Should we use microservices or monolith?"
@@ -224,6 +233,9 @@ Examples:
   consilium "Should we use microservices?" --oxford
   consilium "My plan: migrate to microservices..." --redteam
   consilium "Pricing strategy" --solo --roles "investor,founder,customer"
+  consilium "Will we hit Q3 target?" --forecast
+  consilium "We're launching next month..." --premortem
+  consilium "CrewAI vs raw API for multi-agent?" --debate --rounds 2
 
 Session management:
   consilium --stats                        # Cost breakdown by mode
@@ -234,7 +246,7 @@ Session management:
         """,
     )
     parser.add_argument("question", nargs="?", help="The question for the council to deliberate")
-    parser.add_argument("--quiet", action="store_true", help="Suppress progress output")
+    parser.add_argument("--quiet", "-q", action="store_true", help="Suppress progress output")
     parser.add_argument("--output", "-o", help="Save transcript to file")
     parser.add_argument("--context", "-c", help="Context hint for the judge")
     parser.add_argument("--format", "-f", choices=["json", "yaml", "prose"], default="prose", dest="output_format", help="Output format")
@@ -254,6 +266,9 @@ Session management:
     parser.add_argument("--socratic", action="store_true", help="Socratic mode: probing questions to expose assumptions")
     parser.add_argument("--oxford", action="store_true", help="Oxford debate: binary for/against with rebuttals and verdict")
     parser.add_argument("--deep", action="store_true", help="Deep council: full debate + decompose + 2 rounds (~$0.80)")
+    parser.add_argument("--forecast", action="store_true", help="Forecast mode: superforecasting blind estimates + reconciliation (~$0.20)")
+    parser.add_argument("--premortem", action="store_true", help="Pre-mortem mode: assume failure, reason backward to causes (~$0.20)")
+    parser.add_argument("--debate", action="store_true", help="Debate mode: multi-round cross-critique + judge synthesis (~$0.30)")
     parser.add_argument("--motion", help="Override auto-generated debate motion for --oxford")
     parser.add_argument("--roles", help="Custom perspectives for --solo (comma-separated, >= 2)")
     parser.add_argument("--rounds", type=int, default=None, metavar="N", help="Rounds for --discuss or --socratic (0 = unlimited)")
@@ -430,7 +445,7 @@ Session management:
         parser.error("the following arguments are required: question")
 
     # Validate explicit mode flags (mutually exclusive check only — full validation after auto-routing)
-    mode_flags = [f for f in ["--quick", "--council", "--discuss", "--redteam", "--solo", "--socratic", "--oxford", "--deep"] if getattr(args, f.lstrip("-"))]
+    mode_flags = [f for f in ["--quick", "--council", "--discuss", "--redteam", "--solo", "--socratic", "--oxford", "--deep", "--forecast", "--premortem", "--debate"] if getattr(args, f.lstrip("-"))]
     if len(mode_flags) > 1:
         parser.error(f"{' and '.join(mode_flags)} are mutually exclusive")
 
@@ -473,6 +488,15 @@ Session management:
 
     google_api_key = os.environ.get("GOOGLE_API_KEY")
 
+    # Silent mode: when stdout is piped (not a tty), suppress TUI output
+    # and only print the session file path at the end
+    piped_mode = not sys.stdout.isatty()
+    if piped_mode and not args.quiet:
+        args.quiet = True
+        args._piped_mode = True  # Flag to print session path at end
+    else:
+        args._piped_mode = False
+
     # Set up live file for watching from another terminal
     live_dir = get_sessions_dir().parent
     if not args.quiet:
@@ -512,7 +536,7 @@ Session management:
 
     # Default: auto-route by question type (unless an explicit mode was chosen)
     auto_mode = None
-    explicit_mode = any(getattr(args, f) for f in ("quick", "council", "discuss", "redteam", "solo", "socratic", "oxford", "deep"))
+    explicit_mode = any(getattr(args, f) for f in ("quick", "council", "discuss", "redteam", "solo", "socratic", "oxford", "deep", "forecast", "premortem", "debate"))
     if not explicit_mode:
         if not args.quiet:
             print("Classifying question...", flush=True)
@@ -548,8 +572,8 @@ Session management:
     if hasattr(args, 'roles') and args.roles and not args.solo:
         parser.error("--roles requires --solo")
 
-    if args.rounds is not None and not (args.discuss or args.socratic):
-        parser.error("--rounds requires --discuss or --socratic")
+    if args.rounds is not None and not (args.discuss or args.socratic or args.debate):
+        parser.error("--rounds requires --discuss, --socratic, or --debate")
 
     if args.motion and not args.oxford:
         parser.error("--motion requires --oxford")
@@ -710,6 +734,74 @@ Session management:
             roles_label = " / ".join(custom_roles) if custom_roles else "Advocate / Skeptic / Pragmatist"
             _finish_session(args, args.question, result, "solo",
                 header_extra=f"**Model:** Claude ({roles_label})")
+
+        # Forecast mode
+        if args.forecast:
+            from .forecast import run_forecast
+
+            forecast_panelists = [(n, m, fb) for n, m, fb in COUNCIL[:3]]  # GPT, Gemini, Grok
+            if not args.quiet:
+                print(f"Running forecast ({len(forecast_panelists)} panelists)...")
+                print()
+
+            result = run_forecast(
+                question=args.question,
+                panelists=forecast_panelists,
+                api_key=api_key,
+                google_api_key=google_api_key,
+                verbose=not args.quiet,
+                timeout=args.timeout,
+            )
+
+            _finish_session(args, args.question, result, "forecast",
+                header_extra=f"**Panelists:** {', '.join(n for n, _, _ in forecast_panelists)}",
+                history_extra={"models": [n for n, _, _ in forecast_panelists]})
+
+        # Pre-mortem mode
+        if args.premortem:
+            from .premortem import run_premortem
+
+            premortem_panelists = [(n, m, fb) for n, m, fb in COUNCIL[:3]]  # GPT, Gemini, Grok
+            if not args.quiet:
+                print(f"Running pre-mortem ({len(premortem_panelists)} panelists, Claude hosting)...")
+                print()
+
+            result = run_premortem(
+                question=args.question,
+                panelists=premortem_panelists,
+                api_key=api_key,
+                google_api_key=google_api_key,
+                verbose=not args.quiet,
+                timeout=args.timeout,
+            )
+
+            _finish_session(args, args.question, result, "premortem",
+                header_extra=f"**Panelists:** {', '.join(n for n, _, _ in premortem_panelists)}",
+                history_extra={"models": [n for n, _, _ in premortem_panelists]})
+
+        # Debate mode
+        if args.debate:
+            from .debate import run_debate
+
+            debate_panelists = [(n, m, fb) for n, m, fb in COUNCIL[:3]]  # GPT, Gemini, Grok
+            debate_rounds = args.rounds if args.rounds is not None else 2
+            if not args.quiet:
+                print(f"Running debate ({len(debate_panelists)} panelists, {debate_rounds} rounds)...")
+                print()
+
+            result = run_debate(
+                question=args.question,
+                panelists=debate_panelists,
+                api_key=api_key,
+                google_api_key=google_api_key,
+                rounds=debate_rounds,
+                verbose=not args.quiet,
+                timeout=args.timeout,
+            )
+
+            _finish_session(args, args.question, result, "debate",
+                header_extra=f"**Panelists:** {', '.join(n for n, _, _ in debate_panelists)}\n**Rounds:** {debate_rounds}",
+                history_extra={"models": [n for n, _, _ in debate_panelists], "rounds": debate_rounds})
 
         # Full council mode (explicit --council or auto-routed moderate/complex)
         # --deep: council + forced decompose + 2 rounds

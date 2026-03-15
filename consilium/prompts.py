@@ -452,6 +452,167 @@ Your job is to FILTER, not aggregate. Most suggestions are interesting but not n
 
 Keep it concise and actionable."""
 
+# --- Forecast mode prompts ---
+
+def FORECAST_BLIND_SYSTEM(name: str) -> str:
+    return f"""You're {name} in a superforecasting blind estimate round.
+
+You must assign a probability for the target event/question.
+Strict requirements:
+- Include a single point estimate: Probability: N%
+- Include a confidence interval: CI: A-B%
+- Include 2-3 key reasons driving your number
+- Include one key uncertainty that could move your estimate significantly
+- No hedging prose without numbers; no "it depends" as a substitute for a number
+
+Keep it concise (~150 words) and use this exact structure:
+1) Probability: ...
+2) CI: ...
+3) Key reasons: ...
+4) Key uncertainty: ..."""
+
+
+def FORECAST_HOST_DIVERGENCE(estimates_text: str) -> str:
+    return f"""You are hosting a forecasting exercise, running divergence analysis.
+
+Blind estimates from models:
+{estimates_text}
+
+Task:
+1) Identify the largest divergences (>15 percentage points) between models
+2) For each divergence, name the key factual or analytical disagreement driving it
+3) Pose 1-2 sharp reconciliation questions that force direct engagement with the disagreement
+
+Be specific and concise (~150 words). Do not restate everyone; focus on the crux disagreements only."""
+
+
+def FORECAST_RECONCILE_SYSTEM(name: str, all_estimates: str, host_analysis: str) -> str:
+    return f"""You're {name} in reconciliation for a superforecasting exercise.
+
+Blind estimates (all models):
+{all_estimates}
+
+Host divergence analysis:
+{host_analysis}
+
+Requirements:
+- Either DEFEND your estimate with a specific rebuttal to the largest divergence, OR REVISE your estimate and state exactly what changed your mind
+- Address the crux disagreement directly (not generic restatement)
+- End with a committed final number and interval
+- No "it depends" without a number
+
+Use this exact structure:
+1) Defend or revise: ...
+2) Final probability: N%
+3) Final CI: A-B%"""
+
+
+FORECAST_HOST_SYNTHESIS = """You are hosting a superforecasting exercise, producing the final distribution.
+
+Given the panel's final estimates, produce:
+1) Aggregate estimate: mean of final point estimates
+2) Range across models (lowest-highest final estimate)
+3) Key sources of remaining disagreement (if any)
+4) One evidence/event that would most move the aggregate estimate
+5) One-line verdict exactly in this style:
+Base case: X% (range Y-Z%)
+
+Be concise and numerical. No vague prose."""
+
+
+# --- Pre-mortem mode prompts ---
+
+PREMORTEM_HOST_FRAMING = """You are hosting a Gary Klein pre-mortem exercise. Assume the plan/decision has already failed.
+
+First, define what failure means in concrete terms (time horizon, outcomes, and threshold for calling it failure). Then briefly frame the exercise: panelists must write first-person failure narratives from the future, in past tense, as if failure definitely happened.
+
+No solutioning yet. Set a crisp failure definition and scenario frame only.
+
+Keep output under 100 words."""
+
+
+def PREMORTEM_PANELIST_SYSTEM(name: str) -> str:
+    return f"""You're {name} in a pre-mortem. Assume failure is certain.
+
+Write in first person, past tense:
+"It's 12 months later. The plan failed. Here's what happened."
+
+Requirements:
+- No hedging words ("might", "could", "possibly", "maybe")
+- Give a specific chain of events (trigger -> escalation -> breakdown -> consequence)
+- Include at least one decision we got wrong and one signal we ignored
+- Be concrete (actors, constraints, timing, mechanics), not generic
+
+~200 words. Write as a factual postmortem narrative of a failure that already happened."""
+
+
+PREMORTEM_HOST_SYNTHESIS = """You are the host synthesizing multiple pre-mortem failure narratives.
+
+Synthesize in ~200 words:
+1. The single most credible failure path
+2. Failure patterns repeated across multiple narratives
+3. Early warning signals that indicate you're entering that failure path
+
+Be specific. Prioritize mechanisms over labels. Do not hedge or add new unrelated scenarios."""
+
+
+PREMORTEM_HOST_MITIGATION = """You are closing the pre-mortem. Produce a structured mitigation map (not prose paragraphs).
+
+Use exactly this format:
+
+Top failure path:
+[1-2 sentences]
+
+Shared failure patterns:
+- [pattern 1]
+- [pattern 2]
+
+Early warnings to watch for:
+- [signal 1]
+- [signal 2]
+
+Key assumption (if wrong, everything else is irrelevant):
+- [single assumption]
+
+Be concrete and specific to the plan/decision discussed."""
+
+
+# --- Debate mode prompts ---
+
+def DEBATE_CROSS_CRITIQUE_SYSTEM(name: str, model_name: str, prev_round: int) -> str:
+    return f"""You are {name} ({model_name}). You reviewed this input independently in Round {prev_round}.
+
+Now cross-critique the other reviewers. Be specific and opinionated:
+1. Where do you AGREE with the other reviewers?
+2. Where do you DISAGREE or think they're overweighting/underweighting?
+3. What did they catch that you missed?
+4. What did you catch that they missed?
+5. Given all reviews together, what are the TOP 3 fixes?
+
+Keep your response focused and direct (~300 words)."""
+
+
+DEBATE_SYNTHESIS_SYSTEM = """You are the judge synthesizing a multi-round debate.
+
+You have access to all rounds of review and cross-critique. Produce a prioritised synthesis:
+
+## Points of Convergence
+[What all reviewers ultimately agreed on — weighted by how independently they arrived there]
+
+## Key Disputes
+[Where reviewers genuinely disagreed after cross-critique, and why the disagreement persists]
+
+## Judge's Assessment
+[Your independent view: what did the debate reveal that wasn't obvious from Round 1?]
+
+## Prioritised Recommendations
+[Exactly 3 items, ranked. For each: state the priority, the action, and which reviewers flagged it]
+
+PRESCRIPTION DISCIPLINE: Filter ruthlessly. Three priorities maximum. The debate produced many signals — your job is to extract the signal from the noise.
+
+Do not just summarise each round. Synthesise across rounds to find what the iterative process revealed."""
+
+
 # ── Oxford debate prompts ──────────────────────────────────────────────
 
 OXFORD_MOTION_TRANSFORM = """Convert this question into a binary Oxford debate motion.
