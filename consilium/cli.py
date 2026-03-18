@@ -226,6 +226,7 @@ Modes:
 
 Examples:
   consilium "Should we use microservices or monolith?"
+  consilium --prompt-file question.txt --council
   consilium "What are the tradeoffs of SSR vs CSR?" --quick
   consilium "Career decision" --council --persona "builder who hates process"
   consilium "Is AI consciousness possible?" --discuss --rounds 0
@@ -258,6 +259,7 @@ Session management:
     parser.add_argument("--decompose", action="store_true", help="Decompose complex question into sub-questions before deliberation")
     parser.add_argument("--xpol", action="store_true", help="Cross-pollination: second parallel pass where models investigate gaps in each other's blind claims")
     parser.add_argument("--no-save", action="store_true", help="Don't auto-save transcript")
+    parser.add_argument("--prompt-file", metavar="FILE", help="Read question from file instead of positional argument")
     parser.add_argument("--quick", action="store_true", help="Quick mode: parallel queries, no debate/judge")
     parser.add_argument("--council", action="store_true", help="Full council: skip auto-routing, always run debate + judge")
     parser.add_argument("--discuss", action="store_true", help="Discussion mode: hosted roundtable exploration")
@@ -450,9 +452,18 @@ Session management:
 
         sys.exit(0)
 
+    # Resolve --prompt-file: read question from file
+    if args.prompt_file:
+        prompt_path = Path(args.prompt_file)
+        if not prompt_path.exists():
+            parser.error(f"--prompt-file: file not found: {args.prompt_file}")
+        args.question = prompt_path.read_text().strip()
+        if not args.question:
+            parser.error(f"--prompt-file: file is empty: {args.prompt_file}")
+
     # Require question for normal operation
     if not args.question:
-        parser.error("the following arguments are required: question")
+        parser.error("the following arguments are required: question (or use --prompt-file)")
 
     # Validate explicit mode flags (mutually exclusive check only — full validation after auto-routing)
     mode_flags = [f for f in ["--quick", "--council", "--discuss", "--redteam", "--solo", "--socratic", "--oxford", "--deep", "--forecast", "--premortem", "--debate"] if getattr(args, f.lstrip("-"))]
@@ -825,7 +836,7 @@ Session management:
 
         # Apply --order override if specified
         council_config = list(COUNCIL)
-        if hasattr(args, 'order') and args.order:
+        if args.order:
             order_names = [n.strip().lower() for n in args.order.split(",")]
             name_to_entry = {name.lower(): (name, model, fb) for name, model, fb in council_config}
             reordered = []
