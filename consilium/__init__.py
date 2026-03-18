@@ -19,6 +19,10 @@ from .models import (
     resolved_judge_model,
     resolved_critique_model,
     model_max_output_tokens,
+    query_xai_direct,
+    query_zhipu_direct,
+    query_anthropic_direct,
+    query_claude_print,
 )
 
 from .prompts import ROLE_LIBRARY
@@ -54,4 +58,8 @@ __all__ = [
     "resolved_judge_model",
     "resolved_critique_model",
     "model_max_output_tokens",
+    "query_xai_direct",
+    "query_zhipu_direct",
+    "query_anthropic_direct",
+    "query_claude_print",
 ]
