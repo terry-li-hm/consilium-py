@@ -574,6 +574,38 @@ def sanitize_speaker_content(content: str) -> str:
     return sanitized
 
 
+# Brand name aliases for each council model — used to scrub judge transcript
+_BRAND_ALIASES: dict[str, list[str]] = {
+    "GPT":      ["GPT", "OpenAI", "ChatGPT", "gpt-5", "gpt-4", "gpt 5", "gpt 4"],
+    "Gemini":   ["Gemini", "Google", "Bard", "gemini-3", "gemini-2", "gemini 3", "gemini 2"],
+    "Grok":     ["Grok", "xAI", "x.ai", "grok-4", "grok 4"],
+    "DeepSeek": ["DeepSeek", "deepseek-r1", "deepseek r1"],
+    "GLM":      ["GLM", "Zhipu", "ChatGLM", "glm-5", "glm 5", "zhipuai"],
+}
+
+
+def anonymise_for_judge(
+    deliberation_text: str,
+    display_names: dict[str, str],
+    council_config: list[tuple],
+) -> str:
+    """Scrub model brand names from deliberation text before judge sees it.
+
+    Layer 2 of judge anonymisation (Layer 1 = display_names substitution already done).
+    Catches in-prose self-references like 'as an OpenAI model' or 'GPT suggested'.
+    Case-insensitive, word-boundary regex to avoid mangling URLs or technical strings.
+    """
+    text = deliberation_text
+    for name, _, _ in council_config:
+        speaker_alias = display_names.get(name, name)
+        aliases = _BRAND_ALIASES.get(name, [name])
+        for alias in aliases:
+            # Word boundary match, case-insensitive
+            pattern = r'\b' + re.escape(alias) + r'\b'
+            text = re.sub(pattern, speaker_alias, text, flags=re.IGNORECASE)
+    return text
+
+
 def detect_consensus(
     conversation: list[tuple[str, str]],
     council_config: list[tuple[str, str, tuple[str, str] | None]],

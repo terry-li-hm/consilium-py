@@ -358,3 +358,79 @@ class TestConsensusWithChallenger:
         converged, reason = detect_consensus(conversation, self.COUNCIL_CONFIG, 2)
         assert converged
         assert "agreement" in reason.lower()
+
+
+class TestAnonymiseForJudge:
+    """Tests for anonymise_for_judge function."""
+
+    COUNCIL_CONFIG = [
+        ("GPT",      "openai/gpt-5.2-pro",            None),
+        ("Gemini",   "google/gemini-3.1-pro-preview", ("google", "gemini-2.5-pro")),
+        ("Grok",     "x-ai/grok-4",                   None),
+        ("DeepSeek", "deepseek/deepseek-r1",           None),
+        ("GLM",      "z-ai/glm-5",                    None),
+    ]
+    DISPLAY_NAMES = {
+        "GPT":      "Speaker 1",
+        "Gemini":   "Speaker 2",
+        "Grok":     "Speaker 3",
+        "DeepSeek": "Speaker 4",
+        "GLM":      "Speaker 5",
+    }
+
+    def _anon(self, text):
+        from consilium.models import anonymise_for_judge
+        return anonymise_for_judge(text, self.DISPLAY_NAMES, self.COUNCIL_CONFIG)
+
+    def test_scrubs_gpt_brand(self):
+        result = self._anon("GPT's analysis was compelling here.")
+        assert "GPT" not in result
+        assert "Speaker 1" in result
+
+    def test_scrubs_openai_brand(self):
+        result = self._anon("As an OpenAI model, I can confirm that...")
+        assert "OpenAI" not in result
+
+    def test_scrubs_gemini_brand(self):
+        result = self._anon("Gemini raised a good point about X.")
+        assert "Gemini" not in result
+        assert "Speaker 2" in result
+
+    def test_scrubs_google_brand(self):
+        result = self._anon("The Google perspective was to focus on Y.")
+        assert "Google" not in result
+
+    def test_scrubs_grok_brand(self):
+        result = self._anon("Grok's response challenged the consensus.")
+        assert "Grok" not in result
+        assert "Speaker 3" in result
+
+    def test_scrubs_deepseek_brand(self):
+        result = self._anon("DeepSeek consistently argued for Z.")
+        assert "DeepSeek" not in result
+
+    def test_scrubs_glm_brand(self):
+        result = self._anon("GLM offered a contrarian view.")
+        assert "GLM" not in result
+        assert "Speaker 5" in result
+
+    def test_scrubs_zhipu_brand(self):
+        result = self._anon("Zhipu's model showed strong reasoning.")
+        assert "Zhipu" not in result
+
+    def test_case_insensitive(self):
+        result = self._anon("openai and OPENAI and OpenAI are all the same.")
+        assert "OpenAI" not in result
+        assert "openai" not in result
+        assert "OPENAI" not in result
+
+    def test_no_false_positives_for_normal_text(self):
+        """Text without brand names passes through unchanged."""
+        text = "Speaker 1 made a strong argument. Speaker 2 disagreed."
+        result = self._anon(text)
+        assert result == text
+
+    def test_url_not_mangled(self):
+        """Brand names in prose context are correctly replaced."""
+        result = self._anon("Google thinks X is best.")
+        assert "Google" not in result

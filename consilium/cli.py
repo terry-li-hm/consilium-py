@@ -288,6 +288,11 @@ Session management:
         metavar="MODELS",
         help="Override model speaking order (comma-separated names, e.g. gpt,gemini,grok,deepseek,glm)",
     )
+    parser.add_argument(
+        "--no-anon-judge",
+        action="store_true",
+        help="Disable judge anonymisation (for debugging; default: anonymise brand names)",
+    )
     args = parser.parse_args()
 
     # Handle --sessions
@@ -884,6 +889,7 @@ Session management:
             judge=not args.no_judge,
             sub_questions=sub_questions,
             cross_pollinate=args.xpol,
+            anon_judge=not args.no_anon_judge,
         )
 
         transcript = result.transcript

@@ -11,6 +11,7 @@ from .models import (
     JUDGE_MODEL,
     CRITIQUE_MODEL,
     SessionResult,
+    anonymise_for_judge,
     is_error_response,
     parse_confidence,
     query_model,
@@ -305,6 +306,7 @@ def run_council(
     judge: bool = True,
     sub_questions: list[str] | None = None,
     cross_pollinate: bool = False,
+    anon_judge: bool = True,
 ) -> SessionResult:
     """Run the council deliberation. Returns SessionResult."""
 
@@ -550,6 +552,10 @@ Factor this into your advice — don't just give strategically optimal answers, 
     if len(valid_conversation) < len(conversation):
         failed_count = len(conversation) - len(valid_conversation)
         deliberation_text += f"\n\n*Note: {failed_count} model response(s) were unavailable and excluded from this transcript.*"
+
+    # Layer 2 anonymisation: scrub model brand names from prose before judge sees transcript
+    if anon_judge and judge:
+        deliberation_text = anonymise_for_judge(deliberation_text, display_names, council_config)
 
     if not judge:
         # External judge mode: emit debate transcript + metadata, skip synthesis
