@@ -322,6 +322,9 @@ def run_council(
     sub_questions: list[str] | None = None,
     cross_pollinate: bool = False,
     anon_judge: bool = True,
+    judge_model_override: str | None = None,
+    critic_model_override: str | None = None,
+    thorough: bool = False,
 ) -> SessionResult:
     """Run the council deliberation. Returns SessionResult."""
 
@@ -533,11 +536,12 @@ Factor this into your advice — don't just give strategically optimal answers, 
 
             output_parts.append(f"### {model_name}{challenger_indicator}\n{response}")
 
-        converged, reason = detect_consensus(conversation, council_config, current_challenger)
-        if converged:
-            if verbose:
-                print(f">>> CONSENSUS DETECTED ({reason}) - proceeding to judge\n")
-            break
+        if not thorough:
+            converged, reason = detect_consensus(conversation, council_config, current_challenger)
+            if converged:
+                if verbose:
+                    print(f">>> CONSENSUS DETECTED ({reason}) - proceeding to judge\n")
+                break
 
     # Confidence drift display
     if confidences and verbose:
@@ -676,7 +680,7 @@ If this council revealed a reusable pattern about model reliability, user blind 
             {"role": "user", "content": f"Question:\n{question}\n\n---\n\nCouncil Deliberation:\n\n{deliberation_text}"},
         ]
 
-        judge_model = resolved_judge_model()
+        judge_model = resolved_judge_model(judge_model_override)
         judge_model_name = judge_model.split("/")[-1]
 
         if verbose:
@@ -691,7 +695,7 @@ If this council revealed a reusable pattern about model reliability, user blind 
 
         # CollabEval Phase 2-3: Critique + Revision (skipped when collabeval=False)
         if collabeval:
-            critique_model = resolved_critique_model()
+            critique_model = resolved_critique_model(critic_model_override)
             critique_model_name = critique_model.split("/")[-1]
             critique_system = f"""You are an independent critic reviewing a judge's synthesis of a multi-model council deliberation.
 

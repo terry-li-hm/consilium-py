@@ -302,6 +302,36 @@ Session management:
         action="store_true",
         help="Disable judge anonymisation (for debugging; default: anonymise brand names)",
     )
+    parser.add_argument(
+        "--judge-model", "-J",
+        metavar="MODEL",
+        help="Override judge model (aliases: sonnet, opus, gemini, or full model ID)",
+    )
+    parser.add_argument(
+        "--critic-model", "-C",
+        metavar="MODEL",
+        help="Override critique model (aliases: sonnet, opus, gemini, or full model ID)",
+    )
+    parser.add_argument(
+        "--no-critic",
+        action="store_true",
+        help="Skip the CollabEval critique step",
+    )
+    parser.add_argument(
+        "--xai-model",
+        metavar="MODEL",
+        help="Override xAI model slug for Grok council slot",
+    )
+    parser.add_argument(
+        "--grok",
+        metavar="VARIANT",
+        help="Grok variant shortcut: beta, fast, stable (resolves to full model ID)",
+    )
+    parser.add_argument(
+        "--thorough",
+        action="store_true",
+        help="Force all rounds (no consensus exit, no context compression)",
+    )
     args = parser.parse_args()
 
     # Handle --sessions
@@ -600,11 +630,31 @@ Session management:
     if hasattr(args, 'roles') and args.roles and not args.solo:
         parser.error("--roles requires --solo")
 
-    if args.rounds is not None and not (args.discuss or args.socratic or args.debate):
-        parser.error("--rounds requires --discuss, --socratic, or --debate")
+    if args.rounds is not None and not (args.discuss or args.socratic or args.debate or args.council or args.deep):
+        parser.error("--rounds requires --discuss, --socratic, --debate, --council, or --deep")
 
     if args.motion and not args.oxford:
         parser.error("--motion requires --oxford")
+
+    if args.thorough and not (args.council or args.deep):
+        parser.error("--thorough requires --council or --deep")
+
+    # Resolve --grok shortcut to full model slug
+    if args.grok:
+        _grok_variants = {
+            "beta": "grok-4.20-experimental-beta-0304-reasoning",
+            "fast": "grok-4.20-non-reasoning",
+            "stable": "grok-4",
+        }
+        grok_resolved = _grok_variants.get(args.grok.lower())
+        if grok_resolved:
+            os.environ["CONSILIUM_XAI_MODEL"] = grok_resolved
+        else:
+            parser.error(f"Unknown --grok variant '{args.grok}'. Valid: {', '.join(_grok_variants)}")
+
+    # Resolve --xai-model to env var (picked up by resolved_council)
+    if args.xai_model:
+        os.environ["CONSILIUM_XAI_MODEL"] = args.xai_model
 
     try:
         # Quick mode
@@ -903,11 +953,14 @@ Session management:
             domain=domain_context,
             challenger_idx=challenger_idx,
             format=args.output_format,
-            collabeval=use_collabeval,
+            collabeval=use_collabeval and not args.no_critic,
             judge=not args.no_judge,
             sub_questions=sub_questions,
             cross_pollinate=args.xpol,
             anon_judge=not args.no_anon_judge,
+            judge_model_override=args.judge_model,
+            critic_model_override=args.critic_model,
+            thorough=args.thorough,
         )
 
         transcript = result.transcript
