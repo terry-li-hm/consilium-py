@@ -195,15 +195,22 @@ def _finish_session(
 
 def main():
     from .models import (
-        COUNCIL,
-        QUICK_MODELS,
-        DISCUSS_MODELS,
-        REDTEAM_MODELS,
-        OXFORD_MODELS,
+        resolved_council,
+        quick_models,
+        discuss_models,
+        redteam_models,
+        oxford_models,
         classify_mode,
         detect_social_context,
     )
     from .prompts import ROLE_LIBRARY, DOMAIN_CONTEXTS
+
+    # Resolve runtime council (applies env var overrides at startup)
+    COUNCIL = resolved_council()
+    QUICK_MODELS = quick_models()
+    DISCUSS_MODELS = discuss_models()
+    REDTEAM_MODELS = redteam_models()
+    OXFORD_MODELS = oxford_models()
 
     parser = argparse.ArgumentParser(
         description="Multi-model deliberation CLI. Auto-routes by question type, or pick a mode.",
