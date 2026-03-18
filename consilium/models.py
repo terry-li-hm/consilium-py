@@ -24,11 +24,11 @@ GOOGLE_AI_STUDIO_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 # Model configurations (all via OpenRouter, with Google AI Studio fallback for Gemini)
 # Format: (name, openrouter_model, fallback) - fallback is (provider, model) or None
 COUNCIL = [
-    ("GPT", "openai/gpt-5.2-pro", None),
     ("Gemini", "google/gemini-3.1-pro-preview", ("google", "gemini-2.5-pro")),
     ("Grok", "x-ai/grok-4", None),
     ("DeepSeek", "deepseek/deepseek-r1", None),
     ("GLM", "z-ai/glm-5", None),
+    ("GPT", "openai/gpt-5.2-pro", None),
 ]
 
 # Claude is judge-only (not in council) to avoid conflict of interest

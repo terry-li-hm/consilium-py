@@ -283,6 +283,11 @@ Session management:
                         help="Per-model timeout in seconds (default: 300)")
     parser.add_argument("--no-judge", action="store_true",
                         help="Skip judge synthesis (for external judge integration)")
+    parser.add_argument(
+        "--order",
+        metavar="MODELS",
+        help="Override model speaking order (comma-separated names, e.g. gpt,gemini,grok,deepseek,glm)",
+    )
     args = parser.parse_args()
 
     # Handle --sessions
@@ -813,6 +818,20 @@ Session management:
 
         from .council import decompose_question, run_council, run_followup_discussion
 
+        # Apply --order override if specified
+        council_config = list(COUNCIL)
+        if hasattr(args, 'order') and args.order:
+            order_names = [n.strip().lower() for n in args.order.split(",")]
+            name_to_entry = {name.lower(): (name, model, fb) for name, model, fb in council_config}
+            reordered = []
+            for n in order_names:
+                if n in name_to_entry:
+                    reordered.append(name_to_entry[n])
+                else:
+                    print(f"Warning: --order: model '{n}' not found in council. Ignoring.")
+            if reordered:
+                council_config = reordered
+
         if not args.quiet:
             mode_parts = ["anonymous", "blind"]
             if social_mode:
@@ -823,7 +842,7 @@ Session management:
             if args.persona:
                 print(f"(Persona context: {args.persona})")
             active_challenger_idx = challenger_idx if challenger_idx is not None else 0
-            active_challenger_name = COUNCIL[active_challenger_idx][0]
+            active_challenger_name = council_config[active_challenger_idx][0]
             print(f"(Challenger: {active_challenger_name})")
             print()
 
@@ -848,7 +867,7 @@ Session management:
 
         result = run_council(
             question=args.question,
-            council_config=COUNCIL,
+            council_config=council_config,
             api_key=api_key,
             google_api_key=google_api_key,
             rounds=_council_rounds,
@@ -880,7 +899,7 @@ Session management:
                 followup_transcript = run_followup_discussion(
                     question=args.question,
                     topic=topic,
-                    council_config=COUNCIL,
+                    council_config=council_config,
                     api_key=api_key,
                     domain_context=domain_ctxt,
                     social_mode=social_mode,
@@ -900,7 +919,7 @@ Session management:
 
         history_extra = {
             "context": args.context,
-            "models": [name for name, _, _ in COUNCIL],
+            "models": [name for name, _, _ in council_config],
             "collabeval": use_collabeval,
             "judge": "external" if args.no_judge else "internal",
         }

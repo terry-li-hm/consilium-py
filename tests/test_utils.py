@@ -250,6 +250,31 @@ class TestRotatingChallenger:
         assert (challenger_idx + 7) % council_size == 0
 
 
+class TestCouncilOrder:
+    """Tests for COUNCIL model ordering."""
+
+    def test_gpt_is_last(self):
+        """GPT must be the last model in COUNCIL."""
+        from consilium.models import COUNCIL
+        assert COUNCIL[-1][0] == "GPT"
+
+    def test_gemini_is_first(self):
+        """Gemini must be the first model in COUNCIL."""
+        from consilium.models import COUNCIL
+        assert COUNCIL[0][0] == "Gemini"
+
+    def test_council_has_five_models(self):
+        """COUNCIL must contain exactly 5 models."""
+        from consilium.models import COUNCIL
+        assert len(COUNCIL) == 5
+
+    def test_all_original_models_present(self):
+        """All original models must still be present."""
+        from consilium.models import COUNCIL
+        names = {name for name, _, _ in COUNCIL}
+        assert names == {"GPT", "Gemini", "Grok", "DeepSeek", "GLM"}
+
+
 class TestConsensusWithChallenger:
     """Tests for consensus detection with challenger exclusion."""
 
