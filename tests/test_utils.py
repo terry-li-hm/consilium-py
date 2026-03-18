@@ -731,3 +731,264 @@ class TestThinkingModelGrokBeta:
         """Grok 3 is not a thinking model."""
         assert not is_thinking_model("x-ai/grok-3")
 
+
+class TestQueryXaiDirect:
+    """Tests for query_xai_direct function."""
+
+    MSGS = [{"role": "user", "content": "hi"}]
+
+    def _make_response(self, content: str, status: int = 200):
+        import httpx
+        return httpx.Response(
+            status_code=status,
+            json={"choices": [{"message": {"content": content}}]},
+            request=httpx.Request("POST", "https://api.x.ai/v1/chat/completions"),
+        )
+
+    def test_happy_path(self, monkeypatch):
+        import httpx
+        from consilium.models import query_xai_direct
+        monkeypatch.setattr(httpx, "post", lambda *a, **kw: self._make_response("hello"))
+        assert query_xai_direct("key", "grok-4", self.MSGS) == "hello"
+
+    def test_http_error(self, monkeypatch):
+        import httpx
+        from consilium.models import query_xai_direct
+        monkeypatch.setattr(httpx, "post", lambda *a, **kw: self._make_response("", 500))
+        result = query_xai_direct("key", "grok-4", self.MSGS, retries=0)
+        assert result.startswith("[Error:")
+
+    def test_error_in_response(self, monkeypatch):
+        import httpx
+        from consilium.models import query_xai_direct
+        resp = httpx.Response(
+            status_code=200,
+            json={"error": {"message": "bad request"}},
+            request=httpx.Request("POST", "https://api.x.ai/v1/chat/completions"),
+        )
+        monkeypatch.setattr(httpx, "post", lambda *a, **kw: resp)
+        result = query_xai_direct("key", "grok-4", self.MSGS, retries=0)
+        assert "[Error:" in result
+
+    def test_network_error(self, monkeypatch):
+        import httpx
+        from consilium.models import query_xai_direct
+        def _raise(*a, **kw):
+            raise httpx.RequestError("conn failed")
+        monkeypatch.setattr(httpx, "post", _raise)
+        result = query_xai_direct("key", "grok-4", self.MSGS, retries=0)
+        assert "[Error:" in result
+
+    def test_think_tags_stripped(self, monkeypatch):
+        import httpx
+        from consilium.models import query_xai_direct
+        raw = "<think>reasoning</think>final answer"
+        monkeypatch.setattr(httpx, "post", lambda *a, **kw: self._make_response(raw))
+        result = query_xai_direct("key", "grok-4", self.MSGS)
+        assert "final answer" in result
+        assert "<think>" not in result
+
+
+class TestQueryZhipuDirect:
+    """Tests for query_zhipu_direct function."""
+
+    MSGS = [{"role": "user", "content": "hi"}]
+
+    def _make_response(self, content: str, status: int = 200):
+        import httpx
+        return httpx.Response(
+            status_code=status,
+            json={"choices": [{"message": {"content": content}}]},
+            request=httpx.Request("POST", "https://api.z.ai/api/paas/v4/chat/completions"),
+        )
+
+    def test_happy_path(self, monkeypatch):
+        import httpx
+        from consilium.models import query_zhipu_direct
+        monkeypatch.setattr(httpx, "post", lambda *a, **kw: self._make_response("response"))
+        assert query_zhipu_direct("key", "glm-5", self.MSGS) == "response"
+
+    def test_http_error(self, monkeypatch):
+        import httpx
+        from consilium.models import query_zhipu_direct
+        monkeypatch.setattr(httpx, "post", lambda *a, **kw: self._make_response("", 401))
+        result = query_zhipu_direct("key", "glm-5", self.MSGS, retries=0)
+        assert "[Error:" in result
+
+    def test_network_error(self, monkeypatch):
+        import httpx
+        from consilium.models import query_zhipu_direct
+        def _raise(*a, **kw):
+            raise httpx.RequestError("no route")
+        monkeypatch.setattr(httpx, "post", _raise)
+        result = query_zhipu_direct("key", "glm-5", self.MSGS, retries=0)
+        assert "[Error:" in result
+
+    def test_empty_content(self, monkeypatch):
+        import httpx
+        from consilium.models import query_zhipu_direct
+        resp = httpx.Response(
+            status_code=200,
+            json={"choices": [{"message": {"content": ""}}]},
+            request=httpx.Request("POST", "https://api.z.ai/api/paas/v4/chat/completions"),
+        )
+        monkeypatch.setattr(httpx, "post", lambda *a, **kw: resp)
+        result = query_zhipu_direct("key", "glm-5", self.MSGS, retries=0)
+        assert "[No response" in result
+
+
+class TestQueryAnthropicDirect:
+    """Tests for query_anthropic_direct function."""
+
+    MSGS = [
+        {"role": "system", "content": "You are helpful."},
+        {"role": "user", "content": "hi"},
+    ]
+
+    def _make_response(self, text: str, status: int = 200):
+        import httpx
+        return httpx.Response(
+            status_code=status,
+            json={"content": [{"type": "text", "text": text}]},
+            request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"),
+        )
+
+    def test_happy_path(self, monkeypatch):
+        import httpx
+        from consilium.models import query_anthropic_direct
+        monkeypatch.setattr(httpx, "post", lambda *a, **kw: self._make_response("hello there"))
+        result = query_anthropic_direct("key", "claude-sonnet-4-6", self.MSGS)
+        assert result == "hello there"
+
+    def test_system_extracted(self, monkeypatch):
+        """System message is extracted and sent as top-level field."""
+        import httpx
+        from consilium.models import query_anthropic_direct
+        captured = {}
+        def _post(url, headers, json, timeout):
+            captured["body"] = json
+            return self._make_response("ok")
+        monkeypatch.setattr(httpx, "post", _post)
+        query_anthropic_direct("key", "claude-sonnet-4-6", self.MSGS)
+        assert captured["body"]["system"] == "You are helpful."
+        assert all(m["role"] != "system" for m in captured["body"]["messages"])
+
+    def test_http_error(self, monkeypatch):
+        import httpx
+        from consilium.models import query_anthropic_direct
+        monkeypatch.setattr(httpx, "post", lambda *a, **kw: self._make_response("", 401))
+        result = query_anthropic_direct("key", "claude-sonnet-4-6", self.MSGS, retries=0)
+        assert "[Error:" in result
+
+    def test_error_in_response(self, monkeypatch):
+        import httpx
+        from consilium.models import query_anthropic_direct
+        resp = httpx.Response(
+            status_code=200,
+            json={"error": {"message": "invalid API key"}},
+            request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"),
+        )
+        monkeypatch.setattr(httpx, "post", lambda *a, **kw: resp)
+        result = query_anthropic_direct("key", "claude-sonnet-4-6", self.MSGS, retries=0)
+        assert "[Error:" in result
+
+    def test_network_error(self, monkeypatch):
+        import httpx
+        from consilium.models import query_anthropic_direct
+        def _raise(*a, **kw):
+            raise httpx.RequestError("unreachable")
+        monkeypatch.setattr(httpx, "post", _raise)
+        result = query_anthropic_direct("key", "claude-sonnet-4-6", self.MSGS, retries=0)
+        assert "[Error:" in result
+
+
+class TestQueryClaudePrint:
+    """Tests for query_claude_print function."""
+
+    MSGS = [
+        {"role": "system", "content": "Be helpful."},
+        {"role": "user", "content": "What is 2+2?"},
+    ]
+
+    def test_happy_path_json(self, monkeypatch):
+        import subprocess
+        from consilium.models import query_claude_print
+
+        class FakeResult:
+            returncode = 0
+            stdout = '{"result": "4", "type": "result"}'
+            stderr = ""
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: FakeResult())
+        assert query_claude_print("claude-sonnet-4-6", self.MSGS) == "4"
+
+    def test_happy_path_raw_text(self, monkeypatch):
+        import subprocess
+        from consilium.models import query_claude_print
+
+        class FakeResult:
+            returncode = 0
+            stdout = "the answer is 4"
+            stderr = ""
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: FakeResult())
+        # Non-JSON stdout falls through to raw text path
+        result = query_claude_print("claude-sonnet-4-6", self.MSGS)
+        assert "4" in result
+
+    def test_nonzero_exit(self, monkeypatch):
+        import subprocess
+        from consilium.models import query_claude_print
+
+        class FakeResult:
+            returncode = 1
+            stdout = ""
+            stderr = "rate limited"
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: FakeResult())
+        result = query_claude_print("claude-sonnet-4-6", self.MSGS)
+        assert result.startswith("[Error:")
+
+    def test_cli_not_found(self, monkeypatch):
+        import subprocess
+        from consilium.models import query_claude_print
+
+        def _raise(*a, **kw):
+            raise FileNotFoundError("claude not found")
+
+        monkeypatch.setattr(subprocess, "run", _raise)
+        result = query_claude_print("claude-sonnet-4-6", self.MSGS)
+        assert "[Error:" in result
+
+    def test_timeout(self, monkeypatch):
+        import subprocess
+        from consilium.models import query_claude_print
+
+        def _raise(*a, **kw):
+            raise subprocess.TimeoutExpired("claude", 30)
+
+        monkeypatch.setattr(subprocess, "run", _raise)
+        result = query_claude_print("claude-sonnet-4-6", self.MSGS)
+        assert "[Error:" in result
+
+    def test_claudecode_env_unset(self, monkeypatch):
+        """CLAUDECODE env var is unset before calling claude."""
+        import subprocess
+        from consilium.models import query_claude_print
+
+        captured_env = {}
+
+        class FakeResult:
+            returncode = 0
+            stdout = '{"result": "ok"}'
+            stderr = ""
+
+        def _run(*a, **kw):
+            captured_env.update(kw.get("env", {}))
+            return FakeResult()
+
+        monkeypatch.setenv("CLAUDECODE", "1")
+        monkeypatch.setattr(subprocess, "run", _run)
+        query_claude_print("claude-sonnet-4-6", self.MSGS)
+        assert "CLAUDECODE" not in captured_env
+
