@@ -1168,6 +1168,88 @@ def detect_consensus(
     return True, reason
 
 
+def compress_round_context(
+    round_responses: list[tuple[str, str]],
+    question: str,
+    round_num: int,
+    api_key: str,
+    cost_accumulator: list[float] | None = None,
+    verbose: bool = False,
+) -> str:
+    """Compress a round's responses into a concise summary for the next round.
+
+    Uses a fast, cheap model (Llama 3.3 70B) to summarize all speaker responses
+    from the previous round. Prevents context window overflow in multi-round
+    deliberations. Each speaker's key claims, agreements, and disagreements
+    are preserved; verbose reasoning is stripped.
+
+    Args:
+        round_responses: List of (speaker_display_name, response_text) pairs.
+        question: The original question being deliberated.
+        round_num: Which round just completed (1-indexed).
+        api_key: OpenRouter API key.
+        cost_accumulator: Optional list to accumulate costs.
+        verbose: Whether to print progress.
+
+    Returns:
+        Compressed summary string suitable for inclusion in next-round prompts.
+    """
+    # Build the round transcript
+    transcript_parts = []
+    for speaker, text in round_responses:
+        if is_error_response(text):
+            transcript_parts.append(f"**{speaker}**: *(unavailable)*")
+        else:
+            # Truncate very long responses to avoid blowing compression model context
+            truncated = text[:2000] if len(text) > 2000 else text
+            transcript_parts.append(f"**{speaker}**: {truncated}")
+    transcript = "\n\n".join(transcript_parts)
+
+    system_prompt = f"""You are a concise summarizer for a multi-round council deliberation.
+
+Compress Round {round_num}'s responses into a summary that preserves:
+1. Each speaker's CORE POSITION (1-2 sentences each)
+2. Key AGREEMENTS between speakers
+3. Key DISAGREEMENTS and unresolved tensions
+4. Any POSITION CHANGES from prior rounds (with reasoning cited)
+
+Drop: examples, caveats, hedging, verbose reasoning. Keep only load-bearing claims.
+
+Target length: ~{min(150 * len(round_responses), 600)} words total. Use speaker names as given."""
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"Question: {question}\n\n---\n\nRound {round_num} Responses:\n\n{transcript}"},
+    ]
+
+    if verbose:
+        print(f"(compressing round {round_num} context...)", flush=True)
+
+    response = query_model(
+        api_key,
+        COMPRESSION_MODEL,
+        messages,
+        max_tokens=800,
+        timeout=30.0,
+        stream=False,
+        retries=1,
+        cost_accumulator=cost_accumulator,
+    )
+
+    if is_error_response(response):
+        # Fallback: manual truncation if compression model fails
+        if verbose:
+            print(f"(compression failed, using truncated context)", flush=True)
+        fallback_parts = []
+        for speaker, text in round_responses:
+            if not is_error_response(text):
+                # Take first 200 chars of each response
+                fallback_parts.append(f"**{speaker}**: {text[:200]}...")
+        return "\n\n".join(fallback_parts)
+
+    return response
+
+
 EXTRACTION_PROMPT = """Extract a structured JSON summary from this judge synthesis.
 
 The text uses ACH (Analysis of Competing Hypotheses) with Competing Hypotheses (H1, H2, etc.), Points of Disagreement, and a Synthesis section.
