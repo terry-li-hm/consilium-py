@@ -41,5 +41,8 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["consilium"]
 
+[dependency-groups]
+dev = ["pytest>=8.0", "anyio>=4.0"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

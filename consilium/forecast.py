@@ -4,7 +4,7 @@ import asyncio
 import time
 
 from .models import (
-    JUDGE_MODEL,
+    resolved_judge_model,
     SessionResult,
     is_error_response,
     query_model,
@@ -75,13 +75,14 @@ def run_forecast(
         print("## Divergence Analysis")
         print("### Host (Claude)")
 
-    judge_name = JUDGE_MODEL.split("/")[-1]
+    judge_model = resolved_judge_model()
+    judge_name = judge_model.split("/")[-1]
     divergence_messages = [
         {"role": "system", "content": FORECAST_HOST_DIVERGENCE(all_blind_text)},
         {"role": "user", "content": f"Question:\n{question}\n\nBlind estimates:\n\n{all_blind_text}"},
     ]
     host_divergence = query_model(
-        api_key, JUDGE_MODEL, divergence_messages,
+        api_key, judge_model, divergence_messages,
         max_tokens=600, stream=verbose, cost_accumulator=cost_accumulator,
     )
 
@@ -134,7 +135,7 @@ def run_forecast(
         {"role": "user", "content": f"Question:\n{question}\n\nFinal reconciled estimates:\n\n{final_estimates_text}"},
     ]
     host_distribution = query_model(
-        api_key, JUDGE_MODEL, synthesis_messages,
+        api_key, judge_model, synthesis_messages,
         max_tokens=600, stream=verbose, cost_accumulator=cost_accumulator,
     )
 

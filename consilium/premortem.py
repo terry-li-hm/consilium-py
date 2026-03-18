@@ -4,7 +4,7 @@ import asyncio
 import time
 
 from .models import (
-    JUDGE_MODEL,
+    resolved_judge_model,
     SessionResult,
     query_model,
     run_parallel,
@@ -33,7 +33,8 @@ def run_premortem(
     transcript_parts: list[str] = []
     conversation_history: list[tuple[str, str]] = []
 
-    judge_name = JUDGE_MODEL.split("/")[-1]
+    judge_model = resolved_judge_model()
+    judge_name = judge_model.split("/")[-1]
 
     if verbose:
         print("=" * 60)
@@ -51,7 +52,7 @@ def run_premortem(
         {"role": "user", "content": question},
     ]
     host_setup = query_model(
-        api_key, JUDGE_MODEL, setup_messages,
+        api_key, judge_model, setup_messages,
         max_tokens=400, stream=verbose, cost_accumulator=cost_accumulator,
     )
 
@@ -106,7 +107,7 @@ def run_premortem(
         {"role": "user", "content": f"Plan/decision:\n{question}\n\nFailure narratives:\n\n{narratives_text}"},
     ]
     host_synthesis = query_model(
-        api_key, JUDGE_MODEL, synthesis_messages,
+        api_key, judge_model, synthesis_messages,
         max_tokens=600, stream=verbose, cost_accumulator=cost_accumulator,
     )
 
@@ -132,7 +133,7 @@ def run_premortem(
         {"role": "user", "content": f"Plan/decision:\n{question}\n\nPre-mortem discussion so far:\n\n{full_history_text}"},
     ]
     host_mitigation = query_model(
-        api_key, JUDGE_MODEL, mitigation_messages,
+        api_key, judge_model, mitigation_messages,
         max_tokens=600, stream=verbose, cost_accumulator=cost_accumulator,
     )
 

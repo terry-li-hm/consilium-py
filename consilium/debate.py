@@ -4,7 +4,7 @@ import asyncio
 import time
 
 from .models import (
-    JUDGE_MODEL,
+    resolved_judge_model,
     SessionResult,
     is_error_response,
     query_model,
@@ -118,7 +118,8 @@ def run_debate(
             print()
 
     # Final: Judge synthesis across all rounds
-    judge_name = JUDGE_MODEL.split("/")[-1]
+    judge_model = resolved_judge_model()
+    judge_name = judge_model.split("/")[-1]
     if verbose:
         print("=" * 60)
         print(f"## Final Synthesis ({judge_name})")
@@ -143,7 +144,7 @@ def run_debate(
     ]
 
     judge_synthesis = query_model(
-        api_key, JUDGE_MODEL, synthesis_messages,
+        api_key, judge_model, synthesis_messages,
         max_tokens=1200, stream=verbose, cost_accumulator=cost_accumulator,
     )
 

@@ -8,8 +8,8 @@ import yaml
 
 from .models import (
     COUNCIL,
-    JUDGE_MODEL,
-    CRITIQUE_MODEL,
+    resolved_judge_model,
+    resolved_critique_model,
     SessionResult,
     anonymise_for_judge,
     is_error_response,
@@ -40,7 +40,8 @@ def decompose_question(
     cost_accumulator: list[float] | None = None,
 ) -> list[str]:
     """Break a complex question into 2-3 focused sub-questions."""
-    judge_model_name = JUDGE_MODEL.split("/")[-1]
+    judge_model = resolved_judge_model()
+    judge_model_name = judge_model.split("/")[-1]
     if verbose:
         print(f"### Question Decomposition ({judge_model_name})")
 
@@ -58,7 +59,7 @@ Each sub-question should be actionable for independent analysis.""",
 
     response = query_model(
         api_key,
-        JUDGE_MODEL,
+        judge_model,
         messages,
         max_tokens=300,
         stream=verbose,
@@ -675,12 +676,13 @@ If this council revealed a reusable pattern about model reliability, user blind 
             {"role": "user", "content": f"Question:\n{question}\n\n---\n\nCouncil Deliberation:\n\n{deliberation_text}"},
         ]
 
-        judge_model_name = JUDGE_MODEL.split("/")[-1]
+        judge_model = resolved_judge_model()
+        judge_model_name = judge_model.split("/")[-1]
 
         if verbose:
             print(f"### Judge ({judge_model_name})")
 
-        judge_response = query_model(api_key, JUDGE_MODEL, judge_messages, max_tokens=1200, stream=verbose, cost_accumulator=cost_accumulator)
+        judge_response = query_model(api_key, judge_model, judge_messages, max_tokens=1200, stream=verbose, cost_accumulator=cost_accumulator)
 
         if verbose:
             print()
@@ -689,7 +691,8 @@ If this council revealed a reusable pattern about model reliability, user blind 
 
         # CollabEval Phase 2-3: Critique + Revision (skipped when collabeval=False)
         if collabeval:
-            critique_model_name = CRITIQUE_MODEL.split("/")[-1]
+            critique_model = resolved_critique_model()
+            critique_model_name = critique_model.split("/")[-1]
             critique_system = f"""You are an independent critic reviewing a judge's synthesis of a multi-model council deliberation.
 
 Your job is to find WEAKNESSES in the judge's synthesis — not to agree with it.
@@ -712,7 +715,7 @@ If the synthesis is genuinely strong, say so briefly — but try hard to find so
             if verbose:
                 print(f"### Critique ({critique_model_name})")
 
-            critique_response = query_model(api_key, CRITIQUE_MODEL, critique_messages, max_tokens=800, stream=verbose, cost_accumulator=cost_accumulator)
+            critique_response = query_model(api_key, critique_model, critique_messages, max_tokens=800, stream=verbose, cost_accumulator=cost_accumulator)
 
             if verbose:
                 print()
@@ -734,7 +737,7 @@ If the synthesis is genuinely strong, say so briefly — but try hard to find so
                     {"role": "user", "content": f"An independent critic has reviewed your synthesis:\n\n{critique_response}\n\nRevise your synthesis considering this critique. Keep what's right, fix what's wrong. If the critique raises valid points, integrate them. If not, explain briefly why you stand by your original position. Output your FINAL revised synthesis in the same format."},
                 ]
 
-                final_response = query_model(api_key, JUDGE_MODEL, revision_messages, max_tokens=1200, stream=verbose, cost_accumulator=cost_accumulator)
+                final_response = query_model(api_key, judge_model, revision_messages, max_tokens=1200, stream=verbose, cost_accumulator=cost_accumulator)
 
                 if verbose:
                     print()

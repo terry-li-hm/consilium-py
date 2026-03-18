@@ -7,7 +7,7 @@ import time
 import httpx
 
 from .models import (
-    JUDGE_MODEL,
+    resolved_judge_model,
     SessionResult,
     query_model,
     query_model_async,
@@ -46,7 +46,7 @@ def run_oxford(
     """Run Oxford debate: structured for/against with rebuttals and verdict. Returns SessionResult."""
     start_time = time.time()
     cost_accumulator: list[float] = []
-    judge_model = JUDGE_MODEL
+    judge_model = resolved_judge_model()
     judge_name = "Judge (Claude)"
 
     domain_context = DOMAIN_CONTEXTS.get(domain, "") if domain else ""

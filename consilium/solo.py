@@ -6,7 +6,7 @@ import time
 import httpx
 
 from .models import (
-    JUDGE_MODEL,
+    resolved_judge_model,
     SessionResult,
     parse_confidence,
     query_model,
@@ -35,7 +35,7 @@ def run_solo(
     """Run solo council: structured deliberation with one model playing multiple perspectives. Returns SessionResult."""
     start_time = time.time()
     cost_accumulator: list[float] = []
-    model = JUDGE_MODEL
+    model = resolved_judge_model()
 
     domain_context = DOMAIN_CONTEXTS.get(domain, "") if domain else ""
 
