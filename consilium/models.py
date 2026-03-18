@@ -838,18 +838,34 @@ def detect_consensus(
     threshold = effective_size - 1  # Need all-but-one non-challengers to agree
 
     consensus_count = sum(1 for _, text in recent if "CONSENSUS:" in text.upper())
-    if consensus_count >= threshold:
-        return True, "explicit consensus signals"
-
     agreement_phrases = ["i agree with", "i concur", "we all agree", "consensus emerging"]
     agreement_count = sum(
         1 for _, text in recent
         if any(phrase in text.lower() for phrase in agreement_phrases)
     )
-    if agreement_count >= threshold:
-        return True, "agreement language detected"
 
-    return False, "no consensus"
+    if consensus_count >= threshold:
+        potential_consensus, reason = True, "explicit consensus signals"
+    elif agreement_count >= threshold:
+        potential_consensus, reason = True, "agreement language detected"
+    else:
+        return False, "no consensus"
+
+    # If consensus reached, ensure the challenger isn't actively dissenting
+    if potential_consensus and current_challenger_idx is not None:
+        challenger_name = council_config[current_challenger_idx][0].lower()
+        full_recent = conversation[-council_size:]
+        dissent_phrases = [
+            "i disagree", "i challenge", "this is wrong",
+            "critical flaw", "fundamental problem", "overlooking", "must object",
+        ]
+        for name, text in full_recent:
+            if name.lower() == challenger_name:
+                lower = text.lower()
+                if any(phrase in lower for phrase in dissent_phrases):
+                    return False, "challenger actively dissenting"
+
+    return True, reason
 
 
 EXTRACTION_PROMPT = """Extract a structured JSON summary from this judge synthesis.

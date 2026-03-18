@@ -654,6 +654,68 @@ class TestResolvedCritiqueModel:
         assert resolved_critique_model() == "google/gemini-3.1-pro-preview"
 
 
+class TestChallengerDissent:
+    """Tests for challenger dissent blocking consensus (ported from Rust)."""
+
+    COUNCIL_CONFIG = [
+        ("GPT", "model", None),
+        ("Claude", "model", None),
+        ("Grok", "model", None),
+        ("DeepSeek", "model", None),
+        ("GLM", "model", None),
+    ]
+
+    def test_dissent_blocks_consensus(self):
+        """Challenger actively dissenting blocks consensus."""
+        conversation = [
+            ("GPT", "CONSENSUS: I agree"),
+            ("Claude", "I disagree, there is a critical flaw here."),
+            ("Grok", "CONSENSUS: agreed"),
+            ("DeepSeek", "CONSENSUS: yes"),
+            ("GLM", "CONSENSUS: yes"),
+        ]
+        converged, reason = detect_consensus(conversation, self.COUNCIL_CONFIG, 1)
+        assert not converged
+        assert reason == "challenger actively dissenting"
+
+    def test_challenger_agreeing_allows_consensus(self):
+        """Challenger not dissenting allows consensus."""
+        conversation = [
+            ("GPT", "CONSENSUS: I agree"),
+            ("Claude", "I agree too, let's proceed."),
+            ("Grok", "CONSENSUS: agreed"),
+            ("DeepSeek", "CONSENSUS: yes"),
+            ("GLM", "CONSENSUS: yes"),
+        ]
+        converged, _ = detect_consensus(conversation, self.COUNCIL_CONFIG, 1)
+        assert converged
+
+    def test_no_challenger_idx_no_dissent_check(self):
+        """Without challenger idx, dissent language doesn't block consensus."""
+        conversation = [
+            ("GPT", "CONSENSUS: I agree"),
+            ("Claude", "I disagree completely!"),
+            ("Grok", "CONSENSUS: agreed"),
+            ("DeepSeek", "CONSENSUS: yes"),
+            ("GLM", "CONSENSUS: yes"),
+        ]
+        converged, _ = detect_consensus(conversation, self.COUNCIL_CONFIG, None)
+        assert converged
+
+    def test_challenger_dissent_case_insensitive(self):
+        """Dissent detection is case-insensitive."""
+        conversation = [
+            ("GPT", "CONSENSUS: I agree"),
+            ("Claude", "I CHALLENGE this approach."),
+            ("Grok", "CONSENSUS: agreed"),
+            ("DeepSeek", "CONSENSUS: yes"),
+            ("GLM", "CONSENSUS: yes"),
+        ]
+        converged, reason = detect_consensus(conversation, self.COUNCIL_CONFIG, 1)
+        assert not converged
+        assert reason == "challenger actively dissenting"
+
+
 class TestThinkingModelGrokBeta:
     """Tests for grok-4.20 beta variant detection in is_thinking_model."""
 
