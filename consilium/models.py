@@ -517,6 +517,269 @@ def query_google_ai_studio(
     return f"[Error: Failed to get response from AI Studio {model}]"
 
 
+def query_xai_direct(
+    api_key: str,
+    model: str,
+    messages: list[dict],
+    max_tokens: int = 1500,
+    timeout: float = 120.0,
+    retries: int = 2,
+) -> str:
+    """Query xAI API directly (api.x.ai). OpenAI-compatible endpoint."""
+    for attempt in range(retries + 1):
+        if attempt > 0:
+            backoff = (2 ** attempt) + random.random()
+            time.sleep(backoff)
+
+        try:
+            response = httpx.post(
+                XAI_URL,
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={"model": model, "messages": messages, "max_tokens": max_tokens},
+                timeout=timeout,
+            )
+        except (httpx.RequestError, httpx.RemoteProtocolError) as e:
+            if attempt < retries:
+                continue
+            return f"[Error: xAI connection failed: {e}]"
+
+        if response.status_code != 200:
+            if attempt < retries:
+                continue
+            return f"[Error: HTTP {response.status_code} from xAI {model}]"
+
+        try:
+            data = response.json()
+        except (json.JSONDecodeError, ValueError):
+            if attempt < retries:
+                continue
+            return f"[Error: Invalid JSON from xAI {model}]"
+
+        if "error" in data:
+            if attempt < retries:
+                continue
+            return f"[Error: {data['error'].get('message', data['error'])}]"
+
+        if not data.get("choices"):
+            if attempt < retries:
+                continue
+            return f"[Error: No choices from xAI {model}]"
+
+        content = data["choices"][0]["message"].get("content", "")
+        if not content or not content.strip():
+            reasoning = data["choices"][0]["message"].get("reasoning", "")
+            if reasoning and reasoning.strip():
+                return f"[Model still thinking — increase max_tokens. Partial: {reasoning[:150]}...]"
+            if attempt < retries:
+                continue
+            return f"[No response from xAI {model}]"
+
+        if "<think>" in content:
+            content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
+
+        return content
+
+    return f"[Error: Failed to get response from xAI {model}]"
+
+
+def query_zhipu_direct(
+    api_key: str,
+    model: str,
+    messages: list[dict],
+    max_tokens: int = 1500,
+    timeout: float = 120.0,
+    retries: int = 2,
+) -> str:
+    """Query Zhipu/GLM API directly (api.z.ai). OpenAI-compatible endpoint."""
+    for attempt in range(retries + 1):
+        if attempt > 0:
+            backoff = (2 ** attempt) + random.random()
+            time.sleep(backoff)
+
+        try:
+            response = httpx.post(
+                BIGMODEL_URL,
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={"model": model, "messages": messages, "max_tokens": max_tokens},
+                timeout=timeout,
+            )
+        except (httpx.RequestError, httpx.RemoteProtocolError) as e:
+            if attempt < retries:
+                continue
+            return f"[Error: Zhipu connection failed: {e}]"
+
+        if response.status_code != 200:
+            if attempt < retries:
+                continue
+            return f"[Error: HTTP {response.status_code} from Zhipu {model}]"
+
+        try:
+            data = response.json()
+        except (json.JSONDecodeError, ValueError):
+            if attempt < retries:
+                continue
+            return f"[Error: Invalid JSON from Zhipu {model}]"
+
+        if "error" in data:
+            if attempt < retries:
+                continue
+            return f"[Error: {data['error'].get('message', data['error'])}]"
+
+        if not data.get("choices"):
+            if attempt < retries:
+                continue
+            return f"[Error: No choices from Zhipu {model}]"
+
+        content = data["choices"][0]["message"].get("content", "")
+        if not content or not content.strip():
+            if attempt < retries:
+                continue
+            return f"[No response from Zhipu {model}]"
+
+        return content
+
+    return f"[Error: Failed to get response from Zhipu {model}]"
+
+
+def query_anthropic_direct(
+    api_key: str,
+    model: str,
+    messages: list[dict],
+    max_tokens: int = 1500,
+    timeout: float = 120.0,
+    retries: int = 2,
+) -> str:
+    """Query Anthropic API directly. Extracts system message per Anthropic format."""
+    system_content = None
+    anthropic_messages = []
+    for msg in messages:
+        if msg["role"] == "system":
+            system_content = msg["content"]
+        else:
+            anthropic_messages.append(msg)
+
+    body: dict = {
+        "model": model,
+        "messages": anthropic_messages,
+        "max_tokens": max_tokens,
+    }
+    if system_content:
+        body["system"] = system_content
+
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": ANTHROPIC_VERSION,
+        "content-type": "application/json",
+    }
+
+    for attempt in range(retries + 1):
+        if attempt > 0:
+            backoff = (2 ** attempt) + random.random()
+            time.sleep(backoff)
+
+        try:
+            response = httpx.post(ANTHROPIC_URL, headers=headers, json=body, timeout=timeout)
+        except (httpx.RequestError, httpx.RemoteProtocolError) as e:
+            if attempt < retries:
+                continue
+            return f"[Error: Anthropic connection failed: {e}]"
+
+        if response.status_code != 200:
+            if attempt < retries:
+                continue
+            return f"[Error: HTTP {response.status_code} from Anthropic {model}]"
+
+        try:
+            data = response.json()
+        except (json.JSONDecodeError, ValueError):
+            if attempt < retries:
+                continue
+            return f"[Error: Invalid JSON from Anthropic {model}]"
+
+        if "error" in data:
+            if attempt < retries:
+                continue
+            return f"[Error: {data['error'].get('message', data['error'])}]"
+
+        content_blocks = data.get("content", [])
+        if not content_blocks:
+            if attempt < retries:
+                continue
+            return f"[No response from Anthropic {model}]"
+
+        text = " ".join(
+            b.get("text", "") for b in content_blocks if b.get("type") == "text"
+        ).strip()
+        if not text:
+            if attempt < retries:
+                continue
+            return f"[No text content from Anthropic {model}]"
+
+        return text
+
+    return f"[Error: Failed to get response from Anthropic {model}]"
+
+
+def query_claude_print(
+    model: str,
+    messages: list[dict],
+    max_tokens: int = 1500,
+    timeout: float = 120.0,
+) -> str:
+    """Query Claude via `claude --print` CLI (uses Max subscription via OAuth).
+
+    Unsets CLAUDECODE env var to prevent hook recursion.
+    Falls back with error string if claude CLI is unavailable or fails.
+    """
+    import subprocess
+
+    system_parts = [m["content"] for m in messages if m["role"] == "system"]
+    user_parts = [m["content"] for m in messages if m["role"] != "system"]
+
+    prompt_parts: list[str] = []
+    if system_parts:
+        prompt_parts.append(system_parts[0])
+        prompt_parts.append("")
+    prompt_parts.extend(user_parts)
+    prompt = "\n".join(prompt_parts)
+
+    env = os.environ.copy()
+    env.pop("CLAUDECODE", None)
+    env.pop("CLAUDE_CODE", None)
+
+    try:
+        result = subprocess.run(
+            ["claude", "--print", "--model", model, "--output-format", "json"],
+            input=prompt,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+        )
+    except FileNotFoundError:
+        return "[Error: claude CLI not found]"
+    except subprocess.TimeoutExpired:
+        return f"[Error: claude --print timed out after {timeout}s]"
+
+    if result.returncode != 0:
+        return f"[Error: claude --print exited {result.returncode}: {result.stderr[:200]}]"
+
+    try:
+        data = json.loads(result.stdout)
+        if isinstance(data, dict):
+            content = data.get("result") or data.get("content") or data.get("message", "")
+            if content:
+                return str(content)
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    text = result.stdout.strip()
+    if text:
+        return text
+
+    return "[Error: Empty response from claude --print]"
+
+
 def query_model_streaming(
     api_key: str,
     model: str,
@@ -694,12 +957,39 @@ async def query_model_async(
                 continue
             break
 
-    # Try fallback (Google AI Studio)
+    # Try direct provider fallback (Google AI Studio, xAI, Zhipu, Anthropic)
     if fallback:
         fallback_provider, fallback_model = fallback
         if fallback_provider == "google" and google_api_key:
             response = query_google_ai_studio(google_api_key, fallback_model, messages, max_tokens=max_tokens)
             return (name, fallback_model, response)
+        elif fallback_provider == "xai":
+            xai_key = os.environ.get("XAI_API_KEY")
+            if xai_key:
+                response = await asyncio.to_thread(
+                    query_xai_direct, xai_key, fallback_model, messages, max_tokens
+                )
+                return (name, fallback_model, response)
+        elif fallback_provider == "zhipu":
+            zhipu_key = os.environ.get("ZHIPU_API_KEY")
+            if zhipu_key:
+                response = await asyncio.to_thread(
+                    query_zhipu_direct, zhipu_key, fallback_model, messages, max_tokens
+                )
+                return (name, fallback_model, response)
+        elif fallback_provider == "anthropic":
+            # Try claude --print first (Max subscription), then Anthropic API key
+            response = await asyncio.to_thread(
+                query_claude_print, fallback_model, messages, max_tokens
+            )
+            if not is_error_response(response):
+                return (name, fallback_model, response)
+            anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+            if anthropic_key:
+                response = await asyncio.to_thread(
+                    query_anthropic_direct, anthropic_key, fallback_model, messages, max_tokens
+                )
+                return (name, fallback_model, response)
 
     return (name, model_name, f"[No response from {model_name} after {retries + 1} attempts]")
 
