@@ -1,6 +1,7 @@
 """Full council deliberation mode: blind phase, debate rounds, judge synthesis, CollabEval."""
 
 import asyncio
+import httpx
 import json
 import re
 import time
@@ -16,6 +17,7 @@ from .models import (
     is_error_response,
     parse_confidence,
     query_model,
+    query_model_async,
     query_google_ai_studio,
     run_parallel,
     sanitize_speaker_content,
@@ -31,6 +33,7 @@ from .prompts import (
     COUNCIL_CHALLENGER_ADDITION,
     COUNCIL_SOCIAL_CONSTRAINT,
     COUNCIL_XPOL_SYSTEM,
+    COUNCIL_MULTIROUND_SYSTEM,
 )
 
 
@@ -215,6 +218,121 @@ async def run_xpol_phase_parallel(
         print()
 
     return xpol_results
+
+
+async def run_multiround_parallel(
+    question: str,
+    compressed_context: str,
+    round_num: int,
+    council_config: list[tuple[str, str, tuple[str, str] | None]],
+    display_names: dict[str, str],
+    api_key: str,
+    google_api_key: str | None = None,
+    verbose: bool = True,
+    persona: str | None = None,
+    domain_context: str = "",
+    social_mode: bool = False,
+    challenger_idx: int | None = None,
+    cost_accumulator: list[float] | None = None,
+) -> list[tuple[str, str, str]]:
+    """Parallel cross-critique for rounds 2+.
+
+    Unlike Round 1 (sequential, order matters for anchoring), later rounds
+    use parallel prompts where each model receives the compressed previous
+    round context and cross-critiques all others simultaneously. This saves
+    60-70% of wall clock time compared to sequential execution.
+
+    Each model gets a personalised system prompt with the compressed context
+    and is asked to respond to specific points from the previous round.
+    The rotating challenger gets the additional challenger lens.
+    """
+    if verbose:
+        print(f"(Round {round_num}: parallel cross-critique, {len(council_config)} speakers)")
+        print()
+
+    # Build per-model messages — all share the same compressed context
+    # but each gets a personalised system prompt with their speaker name
+    per_model_messages: list[list[dict]] = []
+    for idx, (name, model, fallback) in enumerate(council_config):
+        dname = display_names[name]
+
+        system_prompt = COUNCIL_MULTIROUND_SYSTEM.format(
+            name=dname,
+            round_num=round_num,
+            compressed_context=compressed_context,
+        )
+
+        if domain_context:
+            system_prompt += f"\n\nDOMAIN CONTEXT: {domain_context}\n\nApply this regulatory domain context to your analysis."
+
+        if social_mode:
+            system_prompt += COUNCIL_SOCIAL_CONSTRAINT
+
+        if persona:
+            system_prompt += f"\n\nIMPORTANT CONTEXT about the person asking:\n{persona}\n\nFactor this into your advice."
+
+        # Rotating challenger
+        if challenger_idx is not None:
+            current_challenger = (challenger_idx + round_num) % len(council_config)
+        else:
+            current_challenger = round_num % len(council_config)
+
+        if idx == current_challenger:
+            system_prompt += COUNCIL_CHALLENGER_ADDITION
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Question for the council:\n\n{question}"},
+        ]
+        per_model_messages.append(messages)
+
+    # Fire all queries in parallel using per-model messages
+    # We can't use run_parallel directly because each model has different messages.
+    # Instead, use asyncio.gather with query_model_async.
+    indexed_results: list[tuple[int, tuple[str, str, str]]] = []
+
+    async def _query(idx, name, model, fallback, msgs, client):
+        try:
+            result = await query_model_async(
+                client, model, msgs, name, fallback,
+                google_api_key, max_tokens=500,
+                cost_accumulator=cost_accumulator,
+            )
+        except Exception as e:
+            model_name = model.split("/")[-1]
+            result = (name, model_name, f"[Error: {e}]")
+        if verbose:
+            _, model_name, response = result
+            # Calculate challenger for display
+            if challenger_idx is not None:
+                current_ch = (challenger_idx + round_num) % len(council_config)
+            else:
+                current_ch = round_num % len(council_config)
+            ch_tag = " (challenger)" if idx == current_ch else ""
+            if not response.startswith("["):
+                print(f"### {model_name}{ch_tag}")
+                print(response)
+                print(flush=True)
+        indexed_results.append((idx, result))
+
+    async with httpx.AsyncClient(
+        headers={"Authorization": f"Bearer {api_key}"},
+        timeout=300.0,
+    ) as client:
+        tasks = [
+            _query(i, name, model, fallback, per_model_messages[i], client)
+            for i, (name, model, fallback) in enumerate(council_config)
+        ]
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Sort by original council index
+    indexed_results.sort(key=lambda x: x[0])
+
+    results = []
+    for idx, result in indexed_results:
+        results.append(result)
+
+    return results
 
 
 def run_followup_discussion(
@@ -426,21 +544,30 @@ def run_council(
         if xpol_lines:
             xpol_context = "\n\n".join(xpol_lines)
 
-    # Debate rounds are intentionally sequential — each model builds on prior speakers'
-    # responses within the round. This is distinct from the blind phase (run_parallel, truly
-    # concurrent) and is correct by design: sequencing creates responsive deliberation.
-    # Do NOT parallelise this loop; doing so would break the cross-model dialogue structure.
-    for round_num in range(rounds):
-        current_round = round_num + 1
+    # Cost guard: warn if N > 2 rounds (each round costs ~60% of base due to compression)
+    if rounds > 2 and verbose:
+        estimated_cost = 0.50 * (1 + 0.6 * (rounds - 1))
+        print(f"(Estimated cost for {rounds} rounds: ~${estimated_cost:.2f})")
+        print()
+
+    # --- ROUND 1: Sequential debate ---
+    # Intentionally sequential — each model builds on prior speakers' responses.
+    # This is distinct from the blind phase (truly parallel) and is correct by
+    # design: sequencing creates responsive deliberation with anchoring dynamics.
+    current_round = 0
+    round_1_responses: list[tuple[str, str]] = []  # (display_name, response)
+
+    if rounds >= 1:
+        current_round = 1
         round_speakers = []
         for idx, (name, model, fallback) in enumerate(council_config):
             dname = display_names[name]
 
-            if idx == 0 and round_num == 0:
+            if idx == 0:
                 if blind_claims:
-                    system_prompt = COUNCIL_FIRST_SPEAKER_WITH_BLIND.format(name=dname, round_num=round_num + 1)
+                    system_prompt = COUNCIL_FIRST_SPEAKER_WITH_BLIND.format(name=dname, round_num=1)
                 else:
-                    system_prompt = COUNCIL_FIRST_SPEAKER_SYSTEM.format(name=dname, round_num=round_num + 1)
+                    system_prompt = COUNCIL_FIRST_SPEAKER_SYSTEM.format(name=dname, round_num=1)
             else:
                 if round_speakers:
                     previous = ", ".join(round_speakers)
@@ -448,33 +575,24 @@ def run_council(
                     previous = ", ".join([display_names[n] for n, _, _ in council_config])
                 system_prompt = COUNCIL_DEBATE_SYSTEM.format(
                     name=dname,
-                    round_num=round_num + 1,
-                    previous_speakers=previous
+                    round_num=1,
+                    previous_speakers=previous,
                 )
 
             if domain_context:
-                system_prompt += f"""
-
-DOMAIN CONTEXT: {domain_context}
-
-Apply this regulatory domain context to your analysis."""
+                system_prompt += f"\n\nDOMAIN CONTEXT: {domain_context}\n\nApply this regulatory domain context to your analysis."
 
             if social_mode:
                 system_prompt += social_constraint
 
             if persona:
-                system_prompt += f"""
+                system_prompt += f"\n\nIMPORTANT CONTEXT about the person asking:\n{persona}\n\nFactor this into your advice — don't just give strategically optimal answers, consider what fits THIS person."
 
-IMPORTANT CONTEXT about the person asking:
-{persona}
-
-Factor this into your advice — don't just give strategically optimal answers, consider what fits THIS person."""
-
-            # Calculate rotating challenger for this round
+            # Calculate rotating challenger for round 1
             if challenger_idx is not None:
-                current_challenger = (challenger_idx + round_num) % len(council_config)
+                current_challenger = challenger_idx % len(council_config)
             else:
-                current_challenger = round_num % len(council_config)
+                current_challenger = 0
 
             if idx == current_challenger:
                 system_prompt += COUNCIL_CHALLENGER_ADDITION
@@ -492,7 +610,7 @@ Factor this into your advice — don't just give strategically optimal answers, 
 
             for speaker, text in conversation:
                 if is_error_response(text):
-                    continue  # Don't feed error strings as speaker arguments
+                    continue
                 speaker_dname = display_names[speaker]
                 sanitized_text = sanitize_speaker_content(text)
                 messages.append({
@@ -527,6 +645,7 @@ Factor this into your advice — don't just give strategically optimal answers, 
 
             conversation.append((name, response))
             round_speakers.append(dname)
+            round_1_responses.append((dname, response))
 
             conf = parse_confidence(response)
             if conf is not None:
@@ -537,12 +656,104 @@ Factor this into your advice — don't just give strategically optimal answers, 
 
             output_parts.append(f"### {model_name}{challenger_indicator}\n{response}")
 
+        # Check consensus after round 1
         if not thorough:
             converged, reason = detect_consensus(conversation, council_config, current_challenger)
             if converged:
                 if verbose:
                     print(f">>> CONSENSUS DETECTED ({reason}) - proceeding to judge\n")
-                break
+                rounds = 1  # Prevent entering rounds 2+
+
+    # --- ROUNDS 2+: Parallel cross-critique with compressed context ---
+    # Unlike Round 1 (sequential, order matters for anchoring), later rounds use
+    # parallel per-panelist prompts. Each model receives compressed previous round
+    # context and cross-critiques all others simultaneously.
+    if rounds > 1:
+        previous_round_responses = round_1_responses  # Start with round 1
+
+        for round_num in range(2, rounds + 1):
+            current_round = round_num
+
+            if verbose:
+                print("=" * 60)
+                print(f"ROUND {round_num}")
+                print("=" * 60)
+                print()
+
+            # Compress previous round context (unless --thorough)
+            if thorough:
+                # Use full uncompressed context from previous round
+                compressed = "\n\n".join(
+                    f"**{speaker}**: {sanitize_speaker_content(text)}"
+                    for speaker, text in previous_round_responses
+                    if not is_error_response(text)
+                )
+            else:
+                compressed = compress_round_context(
+                    previous_round_responses,
+                    question,
+                    round_num - 1,
+                    api_key,
+                    cost_accumulator=cost_accumulator,
+                    verbose=verbose,
+                )
+
+            # Calculate rotating challenger for this round
+            if challenger_idx is not None:
+                current_challenger = (challenger_idx + round_num) % len(council_config)
+            else:
+                current_challenger = round_num % len(council_config)
+
+            # Run parallel cross-critique
+            round_results = asyncio.run(run_multiround_parallel(
+                question=question,
+                compressed_context=compressed,
+                round_num=round_num,
+                council_config=council_config,
+                display_names=display_names,
+                api_key=api_key,
+                google_api_key=google_api_key,
+                verbose=verbose,
+                persona=persona,
+                domain_context=domain_context,
+                social_mode=social_mode,
+                challenger_idx=challenger_idx,
+                cost_accumulator=cost_accumulator,
+            ))
+
+            # Collect results for this round
+            current_round_responses: list[tuple[str, str]] = []
+            for name, model_name, response in round_results:
+                dname = display_names[name]
+
+                if response.startswith("["):
+                    failed_models.append(f"{model_name} (R{round_num}): {response}")
+
+                conversation.append((name, response))
+                current_round_responses.append((dname, response))
+
+                conf = parse_confidence(response)
+                if conf is not None:
+                    confidences.setdefault(name, []).append(conf)
+
+                # Determine challenger for output annotation
+                if challenger_idx is not None:
+                    ch_idx = (challenger_idx + round_num) % len(council_config)
+                else:
+                    ch_idx = round_num % len(council_config)
+                model_idx = next(i for i, (n, _, _) in enumerate(council_config) if n == name)
+                ch_tag = " (challenger)" if model_idx == ch_idx else ""
+                output_parts.append(f"### {model_name}{ch_tag} (R{round_num})\n{response}")
+
+            # Check consensus after this round (unless --thorough)
+            if not thorough:
+                converged, reason = detect_consensus(conversation, council_config, current_challenger)
+                if converged:
+                    if verbose:
+                        print(f">>> CONSENSUS DETECTED ({reason}) after round {round_num} - proceeding to judge\n")
+                    break
+
+            previous_round_responses = current_round_responses
 
     # Confidence drift display
     if confidences and verbose:

@@ -888,6 +888,9 @@ Session management:
         if args.deep:
             args.decompose = True
             _council_rounds = 2
+        # --rounds N overrides default round count for --council / --deep
+        if args.rounds is not None:
+            _council_rounds = args.rounds
 
         from .council import decompose_question, run_council, run_followup_discussion
 
@@ -987,7 +990,9 @@ Session management:
                 transcript += "\n\n" + followup_transcript
 
         _mode_prefix = "deep, " if _is_deep else ""
-        mode_label = f"{_mode_prefix}anonymous, blind{', xpol' if args.xpol else ''}{', social' if social_mode else ''}{f', auto-routed' if auto_mode else ''}{', collabeval' if use_collabeval else ''}{', no-judge' if args.no_judge else ''}"
+        _rounds_label = f", {_council_rounds} rounds" if _council_rounds > 1 else ""
+        _thorough_label = ", thorough" if args.thorough else ""
+        mode_label = f"{_mode_prefix}anonymous, blind{_rounds_label}{_thorough_label}{', xpol' if args.xpol else ''}{', social' if social_mode else ''}{f', auto-routed' if auto_mode else ''}{', collabeval' if use_collabeval and not args.no_critic else ''}{', no-critic' if args.no_critic else ''}{', no-judge' if args.no_judge else ''}"
         header_lines = f"**Mode:** {mode_label}"
         if args.context:
             header_lines += f"\n**Context:** {args.context}"

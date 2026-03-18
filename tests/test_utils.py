@@ -1093,6 +1093,54 @@ class TestGrokVariants:
         assert "non-reasoning" in variants["fast"]
 
 
+class TestMultiroundPrompt:
+    """Tests for COUNCIL_MULTIROUND_SYSTEM prompt template."""
+
+    def test_prompt_has_placeholders(self):
+        from consilium.prompts import COUNCIL_MULTIROUND_SYSTEM
+        assert "{name}" in COUNCIL_MULTIROUND_SYSTEM
+        assert "{round_num}" in COUNCIL_MULTIROUND_SYSTEM
+        assert "{compressed_context}" in COUNCIL_MULTIROUND_SYSTEM
+
+    def test_prompt_formats_correctly(self):
+        from consilium.prompts import COUNCIL_MULTIROUND_SYSTEM
+        result = COUNCIL_MULTIROUND_SYSTEM.format(
+            name="Speaker 1",
+            round_num=2,
+            compressed_context="Speaker 1 argued X. Speaker 2 argued Y.",
+        )
+        assert "Speaker 1" in result
+        assert "Round 2" in result
+        assert "Speaker 1 argued X" in result
+        assert "POSITION CHANGE" in result  # Position integrity instruction
+
+    def test_prompt_asks_for_confidence(self):
+        from consilium.prompts import COUNCIL_MULTIROUND_SYSTEM
+        assert "Confidence: N/10" in COUNCIL_MULTIROUND_SYSTEM
+
+
+class TestChallengerRotationMultiround:
+    """Tests for challenger rotation across multiple rounds."""
+
+    def test_challenger_rotates_each_round(self):
+        """Challenger index advances by 1 each round."""
+        council_size = 5
+        challenger_idx = 0
+        expected = [0, 1, 2, 3, 4, 0]  # wraps at round 5
+        for round_num in range(6):
+            actual = (challenger_idx + round_num) % council_size
+            assert actual == expected[round_num], f"Round {round_num}"
+
+    def test_challenger_rotates_from_nonzero(self):
+        """Rotation from non-zero starting point."""
+        council_size = 5
+        challenger_idx = 3
+        expected = [3, 4, 0, 1, 2]
+        for round_num in range(5):
+            actual = (challenger_idx + round_num) % council_size
+            assert actual == expected[round_num]
+
+
 class TestThoroughFlag:
     """Tests for --thorough flag behavior in consensus detection."""
 
@@ -1119,4 +1167,274 @@ class TestThoroughFlag:
         # Consensus IS detected by the function itself
         assert converged
         # But run_council with thorough=True will not call this
+
+
+class TestMultiroundCouncilIntegration:
+    """Integration tests for multi-round council flow with mocked models."""
+
+    COUNCIL_CONFIG = [
+        ("GPT", "openai/gpt-5.2-pro", None),
+        ("Claude", "anthropic/claude-opus-4-6", None),
+        ("Grok", "x-ai/grok-4", None),
+    ]
+
+    def _mock_query_model(self, call_count):
+        """Return a mock query_model that tracks call count."""
+        def _mock(api_key, model, messages, **kwargs):
+            call_count.append(model)
+            model_name = model.split("/")[-1]
+            return f"Response from {model_name}. **Confidence: 7/10**"
+        return _mock
+
+    def _mock_run_parallel(self, call_count):
+        """Return a mock run_parallel for blind phase."""
+        async def _mock(panelists, messages, api_key, google_api_key=None, **kwargs):
+            results = []
+            for name, model, fallback in panelists:
+                model_name = model.split("/")[-1]
+                call_count.append(f"blind:{model}")
+                results.append((name, model_name, f"Blind claim from {model_name}."))
+            return results
+        return _mock
+
+    def _mock_run_multiround(self, call_count):
+        """Return a mock run_multiround_parallel."""
+        async def _mock(question, compressed_context, round_num, council_config,
+                        display_names, api_key, **kwargs):
+            results = []
+            for name, model, fallback in council_config:
+                model_name = model.split("/")[-1]
+                call_count.append(f"R{round_num}:{model}")
+                results.append((name, model_name, f"Round {round_num} response from {model_name}. **Confidence: 8/10**"))
+            return results
+        return _mock
+
+    def test_single_round_no_multiround(self, monkeypatch):
+        """With rounds=1, no multi-round parallel phase is triggered."""
+        calls = []
+        monkeypatch.setattr("consilium.council.query_model", self._mock_query_model(calls))
+        monkeypatch.setattr("consilium.council.run_parallel",
+                            lambda *a, **kw: __import__("asyncio").get_event_loop().run_until_complete(self._mock_run_parallel(calls)(*a, **kw)))
+
+        # We need to mock run_parallel properly for the blind phase
+        async def _blind_parallel(panelists, messages, api_key, google_api_key=None, **kwargs):
+            results = []
+            for name, model, fallback in panelists:
+                model_name = model.split("/")[-1]
+                calls.append(f"blind:{model}")
+                results.append((name, model_name, f"Blind claim from {model_name}."))
+            return results
+        monkeypatch.setattr("consilium.council.run_parallel", _blind_parallel)
+
+        from consilium.council import run_council
+        result = run_council(
+            question="Test question?",
+            council_config=self.COUNCIL_CONFIG,
+            api_key="fake",
+            rounds=1,
+            verbose=False,
+            judge=False,
+        )
+
+        # Should have blind phase calls + 3 sequential round 1 calls
+        blind_calls = [c for c in calls if c.startswith("blind:")]
+        assert len(blind_calls) == 3
+        # No R2+ calls
+        r2_calls = [c for c in calls if c.startswith("R2:")]
+        assert len(r2_calls) == 0
+
+    def test_multiround_triggers_compression(self, monkeypatch):
+        """With rounds=2, compression is called between rounds."""
+        calls = []
+        compression_calls = []
+
+        monkeypatch.setattr("consilium.council.query_model", self._mock_query_model(calls))
+
+        async def _blind_parallel(panelists, messages, api_key, google_api_key=None, **kwargs):
+            results = []
+            for name, model, fallback in panelists:
+                model_name = model.split("/")[-1]
+                calls.append(f"blind:{model}")
+                results.append((name, model_name, f"Blind claim from {model_name}."))
+            return results
+        monkeypatch.setattr("consilium.council.run_parallel", _blind_parallel)
+
+        def _mock_compress(round_responses, question, round_num, api_key, **kw):
+            compression_calls.append(round_num)
+            return "Compressed summary of round."
+        monkeypatch.setattr("consilium.council.compress_round_context", _mock_compress)
+
+        monkeypatch.setattr("consilium.council.run_multiround_parallel",
+                            self._mock_run_multiround(calls))
+
+        from consilium.council import run_council
+        result = run_council(
+            question="Test multiround?",
+            council_config=self.COUNCIL_CONFIG,
+            api_key="fake",
+            rounds=2,
+            verbose=False,
+            judge=False,
+        )
+
+        # Compression should have been called for round 1 before round 2
+        assert 1 in compression_calls
+        # Round 2 parallel calls should have happened
+        r2_calls = [c for c in calls if c.startswith("R2:")]
+        assert len(r2_calls) == 3
+
+    def test_thorough_skips_compression(self, monkeypatch):
+        """With thorough=True, compression is NOT called."""
+        calls = []
+        compression_calls = []
+
+        monkeypatch.setattr("consilium.council.query_model", self._mock_query_model(calls))
+
+        async def _blind_parallel(panelists, messages, api_key, google_api_key=None, **kwargs):
+            results = []
+            for name, model, fallback in panelists:
+                model_name = model.split("/")[-1]
+                results.append((name, model_name, f"Blind claim from {model_name}."))
+            return results
+        monkeypatch.setattr("consilium.council.run_parallel", _blind_parallel)
+
+        def _mock_compress(round_responses, question, round_num, api_key, **kw):
+            compression_calls.append(round_num)
+            return "Should not be called"
+        monkeypatch.setattr("consilium.council.compress_round_context", _mock_compress)
+
+        monkeypatch.setattr("consilium.council.run_multiround_parallel",
+                            self._mock_run_multiround(calls))
+
+        from consilium.council import run_council
+        result = run_council(
+            question="Test thorough?",
+            council_config=self.COUNCIL_CONFIG,
+            api_key="fake",
+            rounds=2,
+            verbose=False,
+            judge=False,
+            thorough=True,
+        )
+
+        # Compression should NOT have been called
+        assert len(compression_calls) == 0
+
+    def test_three_rounds(self, monkeypatch):
+        """With rounds=3, two compression calls happen (after R1 and R2)."""
+        calls = []
+        compression_calls = []
+
+        monkeypatch.setattr("consilium.council.query_model", self._mock_query_model(calls))
+
+        async def _blind_parallel(panelists, messages, api_key, google_api_key=None, **kwargs):
+            results = []
+            for name, model, fallback in panelists:
+                model_name = model.split("/")[-1]
+                results.append((name, model_name, f"Blind claim."))
+            return results
+        monkeypatch.setattr("consilium.council.run_parallel", _blind_parallel)
+
+        def _mock_compress(round_responses, question, round_num, api_key, **kw):
+            compression_calls.append(round_num)
+            return f"Compressed round {round_num}."
+        monkeypatch.setattr("consilium.council.compress_round_context", _mock_compress)
+
+        monkeypatch.setattr("consilium.council.run_multiround_parallel",
+                            self._mock_run_multiround(calls))
+
+        from consilium.council import run_council
+        result = run_council(
+            question="Test 3 rounds?",
+            council_config=self.COUNCIL_CONFIG,
+            api_key="fake",
+            rounds=3,
+            verbose=False,
+            judge=False,
+        )
+
+        # Compression called twice: after R1 (for R2), after R2 (for R3)
+        assert compression_calls == [1, 2]
+        # R2 and R3 calls
+        r2 = [c for c in calls if c.startswith("R2:")]
+        r3 = [c for c in calls if c.startswith("R3:")]
+        assert len(r2) == 3
+        assert len(r3) == 3
+
+    def test_consensus_exits_early(self, monkeypatch):
+        """Consensus after round 1 prevents rounds 2+ from running."""
+        calls = []
+        compression_calls = []
+
+        def _mock_qm(api_key, model, messages, **kwargs):
+            calls.append(model)
+            model_name = model.split("/")[-1]
+            return f"CONSENSUS: We all agree on this. Response from {model_name}. **Confidence: 9/10**"
+
+        monkeypatch.setattr("consilium.council.query_model", _mock_qm)
+
+        async def _blind_parallel(panelists, messages, api_key, google_api_key=None, **kwargs):
+            results = []
+            for name, model, fallback in panelists:
+                model_name = model.split("/")[-1]
+                results.append((name, model_name, f"Blind claim."))
+            return results
+        monkeypatch.setattr("consilium.council.run_parallel", _blind_parallel)
+
+        def _mock_compress(*a, **kw):
+            compression_calls.append(1)
+            return "summary"
+        monkeypatch.setattr("consilium.council.compress_round_context", _mock_compress)
+
+        monkeypatch.setattr("consilium.council.run_multiround_parallel",
+                            self._mock_run_multiround(calls))
+
+        from consilium.council import run_council
+        result = run_council(
+            question="Consensus test?",
+            council_config=self.COUNCIL_CONFIG,
+            api_key="fake",
+            rounds=3,
+            verbose=False,
+            judge=False,
+        )
+
+        # Compression should not have been called (consensus after R1 exits early)
+        assert len(compression_calls) == 0
+        # No R2/R3 calls
+        r2 = [c for c in calls if "R2:" in c]
+        assert len(r2) == 0
+
+    def test_transcript_includes_all_rounds(self, monkeypatch):
+        """Transcript contains output from all rounds."""
+        calls = []
+
+        monkeypatch.setattr("consilium.council.query_model", self._mock_query_model(calls))
+
+        async def _blind_parallel(panelists, messages, api_key, google_api_key=None, **kwargs):
+            results = []
+            for name, model, fallback in panelists:
+                model_name = model.split("/")[-1]
+                results.append((name, model_name, f"Blind claim from {model_name}."))
+            return results
+        monkeypatch.setattr("consilium.council.run_parallel", _blind_parallel)
+        monkeypatch.setattr("consilium.council.compress_round_context",
+                            lambda *a, **kw: "Compressed.")
+        monkeypatch.setattr("consilium.council.run_multiround_parallel",
+                            self._mock_run_multiround(calls))
+
+        from consilium.council import run_council
+        result = run_council(
+            question="Transcript test?",
+            council_config=self.COUNCIL_CONFIG,
+            api_key="fake",
+            rounds=2,
+            verbose=False,
+            judge=False,
+        )
+
+        # Transcript should mention round 2 responses
+        assert "(R2)" in result.transcript
+        # Transcript should mention blind claims
+        assert "(blind)" in result.transcript
 

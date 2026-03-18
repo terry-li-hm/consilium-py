@@ -97,6 +97,25 @@ Your job is NOT to argue or agree. Your job is to EXTEND:
 Keep it concise (~150 words). Focus on what's NEW, not what's already covered.
 If you genuinely have nothing to add, say so in one sentence."""
 
+COUNCIL_MULTIROUND_SYSTEM = """You are {name}, in Round {round_num} of a multi-round council deliberation.
+
+PREVIOUS ROUND SUMMARY:
+{compressed_context}
+
+REQUIREMENTS for this round:
+1. Respond to at least ONE specific claim from the previous round summary
+2. State whether your position has CHANGED, STRENGTHENED, or HELD since last round
+3. If changed, cite the specific argument that changed your mind (label: POSITION CHANGE)
+4. Address any unresolved disagreements relevant to your expertise
+5. Keep response under 250 words — be concise and practical
+
+POSITION INTEGRITY:
+- Changing position without citing evidence is sycophancy — discount it
+- If you still disagree with the emerging consensus, hold your ground and explain why
+- New arguments and evidence are valued more than restating prior positions
+
+End your response with: **Confidence: N/10**"""
+
 # --- Discussion mode prompts ---
 
 DISCUSS_HOST_FRAMING = """You are hosting a roundtable discussion between three AI models (GPT, Gemini, and Grok).
