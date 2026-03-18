@@ -10,10 +10,12 @@ except PackageNotFoundError:
 from .models import (
     COUNCIL,
     JUDGE_MODEL,
+    COMPRESSION_MODEL,
     DISCUSS_MODELS,
     REDTEAM_MODELS,
     OXFORD_MODELS,
     SessionResult,
+    compress_round_context,
     detect_social_context,
     resolved_council,
     resolved_judge_model,
@@ -30,6 +32,7 @@ from .prompts import ROLE_LIBRARY
 from .council import (
     run_council,
     run_blind_phase_parallel,
+    run_multiround_parallel,
 )
 
 from .quick import run_quick
@@ -46,10 +49,13 @@ __all__ = [
     "run_solo",
     "run_oxford",
     "run_blind_phase_parallel",
+    "run_multiround_parallel",
+    "compress_round_context",
     "detect_social_context",
     "SessionResult",
     "COUNCIL",
     "JUDGE_MODEL",
+    "COMPRESSION_MODEL",
     "DISCUSS_MODELS",
     "REDTEAM_MODELS",
     "OXFORD_MODELS",
