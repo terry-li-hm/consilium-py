@@ -881,12 +881,56 @@ async def query_model_async(
     retries: int = 2,
     cost_accumulator: list[float] | None = None,
 ) -> tuple[str, str, str]:
-    """Async query for parallel phases. Returns (name, model_name, response)."""
+    """Async query for parallel phases. Returns (name, model_name, response).
+
+    Routing order (matches Rust query_model_with_fallback):
+      1. Direct provider first (if fallback specified and API key available)
+      2. OpenRouter as fallback (if direct fails or no key)
+    This matters for latency: xAI direct 5.8s vs OR 13s, Zhipu 2.6s vs OR 9.8s.
+    """
     if is_thinking_model(model):
         max_tokens = max(max_tokens, 1500)
 
     model_name = model.split("/")[-1]
 
+    # Step 1: Try direct provider FIRST (latency optimization)
+    if fallback:
+        fallback_provider, fallback_model = fallback
+        direct_response = None
+
+        if fallback_provider == "anthropic":
+            # Claude: try claude --print (Max subscription) → Anthropic API key
+            direct_response = await asyncio.to_thread(
+                query_claude_print, fallback_model, messages, max_tokens
+            )
+            if is_error_response(direct_response):
+                anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+                if anthropic_key:
+                    direct_response = await asyncio.to_thread(
+                        query_anthropic_direct, anthropic_key, fallback_model, messages, max_tokens
+                    )
+        elif fallback_provider == "xai":
+            xai_key = os.environ.get("XAI_API_KEY")
+            if xai_key:
+                direct_response = await asyncio.to_thread(
+                    query_xai_direct, xai_key, fallback_model, messages, max_tokens
+                )
+        elif fallback_provider == "zhipu":
+            zhipu_key = os.environ.get("ZHIPU_API_KEY")
+            if zhipu_key:
+                direct_response = await asyncio.to_thread(
+                    query_zhipu_direct, zhipu_key, fallback_model, messages, max_tokens
+                )
+        elif fallback_provider == "google" and google_api_key:
+            direct_response = query_google_ai_studio(
+                google_api_key, fallback_model, messages, max_tokens=max_tokens
+            )
+
+        if direct_response and not is_error_response(direct_response):
+            return (name, fallback_model, direct_response)
+        # Direct failed or no key — fall through to OpenRouter
+
+    # Step 2: OpenRouter fallback
     for attempt in range(retries + 1):
         if attempt > 0:
             backoff = (2 ** attempt) + random.random()
@@ -956,40 +1000,6 @@ async def query_model_async(
             if attempt < retries:
                 continue
             break
-
-    # Try direct provider fallback (Google AI Studio, xAI, Zhipu, Anthropic)
-    if fallback:
-        fallback_provider, fallback_model = fallback
-        if fallback_provider == "google" and google_api_key:
-            response = query_google_ai_studio(google_api_key, fallback_model, messages, max_tokens=max_tokens)
-            return (name, fallback_model, response)
-        elif fallback_provider == "xai":
-            xai_key = os.environ.get("XAI_API_KEY")
-            if xai_key:
-                response = await asyncio.to_thread(
-                    query_xai_direct, xai_key, fallback_model, messages, max_tokens
-                )
-                return (name, fallback_model, response)
-        elif fallback_provider == "zhipu":
-            zhipu_key = os.environ.get("ZHIPU_API_KEY")
-            if zhipu_key:
-                response = await asyncio.to_thread(
-                    query_zhipu_direct, zhipu_key, fallback_model, messages, max_tokens
-                )
-                return (name, fallback_model, response)
-        elif fallback_provider == "anthropic":
-            # Try claude --print first (Max subscription), then Anthropic API key
-            response = await asyncio.to_thread(
-                query_claude_print, fallback_model, messages, max_tokens
-            )
-            if not is_error_response(response):
-                return (name, fallback_model, response)
-            anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
-            if anthropic_key:
-                response = await asyncio.to_thread(
-                    query_anthropic_direct, anthropic_key, fallback_model, messages, max_tokens
-                )
-                return (name, fallback_model, response)
 
     return (name, model_name, f"[No response from {model_name} after {retries + 1} attempts]")
 
