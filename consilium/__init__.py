@@ -15,6 +15,10 @@ from .models import (
     OXFORD_MODELS,
     SessionResult,
     detect_social_context,
+    resolved_council,
+    resolved_judge_model,
+    resolved_critique_model,
+    model_max_output_tokens,
 )
 
 from .prompts import ROLE_LIBRARY
@@ -46,4 +50,8 @@ __all__ = [
     "REDTEAM_MODELS",
     "OXFORD_MODELS",
     "ROLE_LIBRARY",
+    "resolved_council",
+    "resolved_judge_model",
+    "resolved_critique_model",
+    "model_max_output_tokens",
 ]

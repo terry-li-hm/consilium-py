@@ -1,11 +1,21 @@
 """Unit tests for models.py utility functions."""
 
+import os
 import pytest
 from consilium.models import (
     detect_social_context,
     detect_consensus,
     sanitize_speaker_content,
     is_thinking_model,
+    model_max_output_tokens,
+    per_model_max_tokens,
+    is_error_response,
+    fallback_also_failed_message,
+    resolved_council,
+    resolved_judge_model,
+    resolved_critique_model,
+    _display_name_from_model,
+    _xai_model_label,
 )
 
 
@@ -206,7 +216,7 @@ class TestIsThinkingModel:
 
     def test_case_insensitive(self):
         """Model name matching is case insensitive."""
-        assert is_thinking_model("GEMINI-3-PRO-PREVIEW")
+        assert is_thinking_model("GEMINI-3.1-PRO-PREVIEW")
 
     def test_slug_path(self):
         """Handles full path strings."""
@@ -251,38 +261,48 @@ class TestRotatingChallenger:
 
 
 class TestCouncilOrder:
-    """Tests for COUNCIL model ordering."""
+    """Tests for COUNCIL model ordering (synced with Rust resolved_council)."""
 
-    def test_gpt_is_last(self):
-        """GPT must be the last model in COUNCIL."""
+    def test_gpt_is_first(self):
+        """GPT must be the first model in COUNCIL."""
         from consilium.models import COUNCIL
-        assert COUNCIL[-1][0] == "GPT"
+        assert COUNCIL[0][0] == "GPT"
 
-    def test_gemini_is_first(self):
-        """Gemini must be the first model in COUNCIL."""
+    def test_glm_is_last(self):
+        """GLM must be the last model in COUNCIL."""
         from consilium.models import COUNCIL
-        assert COUNCIL[0][0] == "Gemini"
+        assert COUNCIL[-1][0] == "GLM"
 
     def test_council_has_five_models(self):
         """COUNCIL must contain exactly 5 models."""
         from consilium.models import COUNCIL
         assert len(COUNCIL) == 5
 
-    def test_all_original_models_present(self):
-        """All original models must still be present."""
+    def test_all_models_present(self):
+        """All expected models must be present."""
         from consilium.models import COUNCIL
         names = {name for name, _, _ in COUNCIL}
-        assert names == {"GPT", "Gemini", "Grok", "DeepSeek", "GLM"}
+        assert names == {"GPT", "Claude", "Grok-4.20\u03B2", "DeepSeek", "GLM"}
+
+    def test_claude_is_m2(self):
+        """Claude must be the second model (M2 panelist)."""
+        from consilium.models import COUNCIL
+        assert COUNCIL[1][0] == "Claude"
+
+    def test_gemini_is_judge(self):
+        """Gemini must be the judge model, not in council."""
+        from consilium.models import JUDGE_MODEL
+        assert "gemini" in JUDGE_MODEL.lower()
 
 
 class TestConsensusWithChallenger:
     """Tests for consensus detection with challenger exclusion."""
 
     # Minimal council config for testing (only name matters)
-    # Matches real council: GPT, Gemini, Grok, DeepSeek, GLM (Claude is judge-only)
+    # Matches real council: GPT, Claude, Grok, DeepSeek, GLM (Gemini is judge)
     COUNCIL_CONFIG = [
         ("GPT", "model", None),
-        ("Gemini", "model", None),
+        ("Claude", "model", None),
         ("Grok", "model", None),
         ("DeepSeek", "model", None),
         ("GLM", "model", None),
@@ -292,12 +312,12 @@ class TestConsensusWithChallenger:
         """Challenger's agreement doesn't count toward consensus."""
         conversation = [
             ("GPT", "CONSENSUS: I agree"),
-            ("Gemini", "CONSENSUS: yes"),  # This is the challenger
+            ("Claude", "CONSENSUS: yes"),  # This is the challenger
             ("Grok", "CONSENSUS: agreed"),
             ("DeepSeek", "different view"),
             ("GLM", "CONSENSUS: yes"),
         ]
-        # Gemini (index 1) is challenger, excluded
+        # Claude (index 1) is challenger, excluded
         # 3 of 4 non-challengers have CONSENSUS = threshold met
         converged, reason = detect_consensus(conversation, self.COUNCIL_CONFIG, 1)
         assert converged
@@ -307,12 +327,12 @@ class TestConsensusWithChallenger:
         """Without exclusion, this would be 4/5 but with exclusion it's 3/4."""
         conversation = [
             ("GPT", "CONSENSUS: I agree"),
-            ("Gemini", "different view"),  # This is the challenger
+            ("Claude", "different view"),  # This is the challenger
             ("Grok", "CONSENSUS: agreed"),
             ("DeepSeek", "another view"),
             ("GLM", "CONSENSUS: yes"),
         ]
-        # Gemini (index 1) is challenger, excluded
+        # Claude (index 1) is challenger, excluded
         # 3 of 4 non-challengers have CONSENSUS, threshold is 3
         converged, _ = detect_consensus(conversation, self.COUNCIL_CONFIG, 1)
         assert converged
@@ -321,12 +341,12 @@ class TestConsensusWithChallenger:
         """No consensus when non-challengers don't agree enough."""
         conversation = [
             ("GPT", "CONSENSUS: I agree"),
-            ("Gemini", "CONSENSUS: yes"),  # This is the challenger, excluded
+            ("Claude", "CONSENSUS: yes"),  # This is the challenger, excluded
             ("Grok", "another view"),
             ("DeepSeek", "yet another view"),
             ("GLM", "something else"),
         ]
-        # Gemini (index 1) is challenger, excluded
+        # Claude (index 1) is challenger, excluded
         # Only 1 of 4 non-challengers have CONSENSUS, threshold is 3
         converged, _ = detect_consensus(conversation, self.COUNCIL_CONFIG, 1)
         assert not converged
@@ -335,7 +355,7 @@ class TestConsensusWithChallenger:
         """Without challenger index, all models count toward consensus."""
         conversation = [
             ("GPT", "CONSENSUS: I agree"),
-            ("Gemini", "CONSENSUS: yes"),
+            ("Claude", "CONSENSUS: yes"),
             ("Grok", "CONSENSUS: agreed"),
             ("DeepSeek", "different view"),
             ("GLM", "CONSENSUS: yes"),
@@ -348,7 +368,7 @@ class TestConsensusWithChallenger:
         """Agreement phrases also exclude challenger."""
         conversation = [
             ("GPT", "I agree with the others"),
-            ("Gemini", "I agree with everyone"),
+            ("Claude", "I agree with everyone"),
             ("Grok", "I concur with this"),  # challenger (index 2)
             ("DeepSeek", "something else"),
             ("GLM", "I agree with this solution"),
@@ -365,15 +385,15 @@ class TestAnonymiseForJudge:
 
     COUNCIL_CONFIG = [
         ("GPT",      "openai/gpt-5.2-pro",            None),
-        ("Gemini",   "google/gemini-3.1-pro-preview", ("google", "gemini-2.5-pro")),
-        ("Grok",     "x-ai/grok-4",                   None),
-        ("DeepSeek", "deepseek/deepseek-r1",           None),
-        ("GLM",      "z-ai/glm-5",                    None),
+        ("Claude",   "anthropic/claude-opus-4-6",     ("anthropic", "claude-sonnet-4-6")),
+        ("Grok-4.20\u03B2", "x-ai/grok-4",           ("xai", "grok-4.20-experimental-beta-0304-reasoning")),
+        ("DeepSeek", "deepseek/deepseek-v3.2",         None),
+        ("GLM",      "z-ai/glm-5",                   ("zhipu", "glm-5")),
     ]
     DISPLAY_NAMES = {
         "GPT":      "Speaker 1",
-        "Gemini":   "Speaker 2",
-        "Grok":     "Speaker 3",
+        "Claude":   "Speaker 2",
+        "Grok-4.20\u03B2": "Speaker 3",
         "DeepSeek": "Speaker 4",
         "GLM":      "Speaker 5",
     }
@@ -391,14 +411,14 @@ class TestAnonymiseForJudge:
         result = self._anon("As an OpenAI model, I can confirm that...")
         assert "OpenAI" not in result
 
-    def test_scrubs_gemini_brand(self):
-        result = self._anon("Gemini raised a good point about X.")
-        assert "Gemini" not in result
+    def test_scrubs_claude_brand(self):
+        result = self._anon("Claude raised a good point about X.")
+        assert "Claude" not in result
         assert "Speaker 2" in result
 
-    def test_scrubs_google_brand(self):
-        result = self._anon("The Google perspective was to focus on Y.")
-        assert "Google" not in result
+    def test_scrubs_anthropic_brand(self):
+        result = self._anon("The Anthropic perspective was to focus on Y.")
+        assert "Anthropic" not in result
 
     def test_scrubs_grok_brand(self):
         result = self._anon("Grok's response challenged the consensus.")
@@ -430,7 +450,222 @@ class TestAnonymiseForJudge:
         result = self._anon(text)
         assert result == text
 
-    def test_url_not_mangled(self):
+    def test_brand_names_replaced_in_prose(self):
         """Brand names in prose context are correctly replaced."""
-        result = self._anon("Google thinks X is best.")
-        assert "Google" not in result
+        result = self._anon("Anthropic thinks X is best.")
+        assert "Anthropic" not in result
+
+    def test_url_not_mangled(self):
+        """URLs containing brand names are passed through unchanged."""
+        url = "https://openai.com/research/gpt-4"
+        result = self._anon(f"See {url} for details.")
+        assert url in result
+
+
+class TestModelMaxOutputTokens:
+    """Tests for model_max_output_tokens function (ported from Rust)."""
+
+    def test_gemini_25(self):
+        assert model_max_output_tokens("google/gemini-2.5-pro") == 65536
+
+    def test_gemini_3(self):
+        assert model_max_output_tokens("google/gemini-3.1-pro") == 65536
+
+    def test_gemini_15(self):
+        assert model_max_output_tokens("google/gemini-1.5-pro") == 8192
+
+    def test_claude(self):
+        assert model_max_output_tokens("anthropic/claude-3-opus") == 32000
+
+    def test_gpt(self):
+        assert model_max_output_tokens("openai/gpt-4o") == 16384
+
+    def test_gpt_52(self):
+        assert model_max_output_tokens("openai/gpt-5.2-pro") == 16384
+
+    def test_deepseek(self):
+        assert model_max_output_tokens("deepseek/deepseek-v3.2") == 16384
+
+    def test_grok(self):
+        assert model_max_output_tokens("x-ai/grok-2") == 32768
+
+    def test_kimi(self):
+        assert model_max_output_tokens("moonshotai/kimi-v1") == 16384
+
+    def test_glm(self):
+        assert model_max_output_tokens("z-ai/glm-4") == 16000
+
+    def test_unknown_default(self):
+        assert model_max_output_tokens("meta-llama/llama-3") == 8192
+
+
+class TestPerModelMaxTokens:
+    """Tests for per_model_max_tokens function."""
+
+    def test_glm_default(self):
+        assert per_model_max_tokens("z-ai/glm-5", 8192) == 16000
+
+    def test_glm_env_override(self, monkeypatch):
+        monkeypatch.setenv("GLM_MAX_TOKENS", "8000")
+        assert per_model_max_tokens("z-ai/glm-5", 8192) == 8000
+
+    def test_glm_env_invalid(self, monkeypatch):
+        monkeypatch.setenv("GLM_MAX_TOKENS", "not_a_number")
+        assert per_model_max_tokens("z-ai/glm-5", 8192) == 16000
+
+    def test_non_glm_uses_default(self):
+        assert per_model_max_tokens("openai/gpt-5.2-pro", 4096) == 4096
+
+
+class TestDisplayNameFromModel:
+    """Tests for _display_name_from_model function (ported from Rust)."""
+
+    def test_gpt(self):
+        assert _display_name_from_model("openai/gpt-5.2-pro") == "GPT-5.2-Pro"
+
+    def test_deepseek(self):
+        assert _display_name_from_model("deepseek/deepseek-v3.2") == "DeepSeek-V3.2"
+
+    def test_gemini_preview(self):
+        assert _display_name_from_model("google/gemini-3.1-pro-preview") == "Gemini-3.1-Pro"
+
+    def test_grok(self):
+        assert _display_name_from_model("x-ai/grok-4") == "Grok-4"
+
+    def test_glm(self):
+        assert _display_name_from_model("z-ai/glm-5") == "GLM-5"
+
+
+class TestXaiModelLabel:
+    """Tests for _xai_model_label."""
+
+    def test_beta_label(self):
+        assert _xai_model_label("grok-4.20-experimental-beta-0304-reasoning") == "Grok-4.20\u03B2"
+
+    def test_non_reasoning(self):
+        assert _xai_model_label("grok-4.20-non-reasoning") == "Grok-4.20\u03B2-NR"
+
+    def test_non_beta_fallback(self):
+        assert _xai_model_label("grok-3") == "Grok-3"
+
+
+class TestIsErrorResponse:
+    """Tests for is_error_response function."""
+
+    def test_error_response(self):
+        assert is_error_response("[Error: Connection failed]")
+
+    def test_no_response(self):
+        assert is_error_response("[No response from model]")
+
+    def test_still_thinking(self):
+        assert is_error_response("[Model still thinking - needs more tokens]")
+
+    def test_empty_string(self):
+        assert is_error_response("")
+
+    def test_normal_text(self):
+        assert not is_error_response("Normal response")
+
+    def test_other_bracket(self):
+        assert not is_error_response("[Some other bracket]")
+
+
+class TestFallbackAlsoFailedMessage:
+    """Tests for fallback_also_failed_message."""
+
+    def test_format(self):
+        result = fallback_also_failed_message("GLM", "[Error: primary]", "[Error: fallback]")
+        assert result == "[Fallback also failed for GLM: primary=[Error: primary], fallback=[Error: fallback]]"
+
+
+class TestResolvedCouncil:
+    """Tests for resolved_council with env var overrides."""
+
+    def test_default_council_has_five(self):
+        """Default resolved council has 5 models."""
+        council = resolved_council()
+        assert len(council) == 5
+
+    def test_default_gpt_first(self):
+        """GPT is first in default resolved council."""
+        council = resolved_council()
+        assert "GPT" in council[0][0]
+
+    def test_m1_env_override(self, monkeypatch):
+        """CONSILIUM_MODEL_M1 overrides GPT slot."""
+        monkeypatch.setenv("CONSILIUM_MODEL_M1", "anthropic/claude-sonnet-4-6")
+        council = resolved_council()
+        assert council[0][1] == "anthropic/claude-sonnet-4-6"
+        assert "Claude" in council[0][0]
+
+    def test_xai_model_override(self, monkeypatch):
+        """CONSILIUM_XAI_MODEL overrides xAI fallback slug."""
+        monkeypatch.setenv("CONSILIUM_XAI_MODEL", "grok-4.20-non-reasoning")
+        council = resolved_council()
+        assert council[2][2] == ("xai", "grok-4.20-non-reasoning")
+        assert "NR" in council[2][0]
+
+    def test_empty_env_ignored(self, monkeypatch):
+        """Empty env vars are treated as unset."""
+        monkeypatch.setenv("CONSILIUM_MODEL_M1", "")
+        council = resolved_council()
+        assert council[0][1] == "openai/gpt-5.2-pro"
+
+
+class TestResolvedJudgeModel:
+    """Tests for resolved_judge_model."""
+
+    def test_default(self):
+        assert "gemini" in resolved_judge_model().lower()
+
+    def test_cli_override(self):
+        assert resolved_judge_model("sonnet") == "anthropic/claude-sonnet-4-6"
+
+    def test_cli_alias_opus(self):
+        assert resolved_judge_model("opus") == "anthropic/claude-opus-4-6"
+
+    def test_cli_alias_gemini(self):
+        assert resolved_judge_model("gemini") == "google/gemini-3.1-pro-preview"
+
+    def test_env_override(self, monkeypatch):
+        monkeypatch.setenv("CONSILIUM_MODEL_JUDGE", "opus")
+        assert resolved_judge_model() == "anthropic/claude-opus-4-6"
+
+    def test_cli_beats_env(self, monkeypatch):
+        monkeypatch.setenv("CONSILIUM_MODEL_JUDGE", "opus")
+        assert resolved_judge_model("sonnet") == "anthropic/claude-sonnet-4-6"
+
+    def test_full_model_id(self):
+        assert resolved_judge_model("anthropic/claude-sonnet-4-6") == "anthropic/claude-sonnet-4-6"
+
+
+class TestResolvedCritiqueModel:
+    """Tests for resolved_critique_model."""
+
+    def test_default(self):
+        assert "sonnet" in resolved_critique_model().lower()
+
+    def test_cli_override(self):
+        assert resolved_critique_model("opus") == "anthropic/claude-opus-4-6"
+
+    def test_env_override(self, monkeypatch):
+        monkeypatch.setenv("CONSILIUM_MODEL_CRITIQUE", "gemini")
+        assert resolved_critique_model() == "google/gemini-3.1-pro-preview"
+
+
+class TestThinkingModelGrokBeta:
+    """Tests for grok-4.20 beta variant detection in is_thinking_model."""
+
+    def test_grok_420_beta(self):
+        """Grok 4.20 beta variants are thinking models."""
+        assert is_thinking_model("grok-4.20-experimental-beta-0304-reasoning")
+
+    def test_grok_420_non_reasoning(self):
+        """Grok 4.20 non-reasoning variants are thinking models (still high latency)."""
+        assert is_thinking_model("grok-4.21-something")
+
+    def test_grok_3_not_thinking(self):
+        """Grok 3 is not a thinking model."""
+        assert not is_thinking_model("x-ai/grok-3")
+

@@ -3,6 +3,7 @@
 import asyncio
 import httpx
 import json
+import os
 import random
 import re
 import time
@@ -20,36 +21,62 @@ class SessionResult:
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 GOOGLE_AI_STUDIO_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+BIGMODEL_URL = "https://api.z.ai/api/paas/v4/chat/completions"
+XAI_URL = "https://api.x.ai/v1/chat/completions"
+OPENAI_URL = "https://api.openai.com/v1/chat/completions"
+ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_VERSION = "2023-06-01"
 
-# Model configurations (all via OpenRouter, with Google AI Studio fallback for Gemini)
+# Default council composition (static fallback — use resolved_council() at runtime)
 # Format: (name, openrouter_model, fallback) - fallback is (provider, model) or None
+# Fallback routing based on HK latency benchmark (2026-03-04):
+#   GPT: None — gpt-5.2-pro is a standard chat/thinking model on OpenRouter
+#   Claude: Anthropic direct (claude-sonnet-4-6 fallback)
+#   Grok: xAI direct (5.8s) vs OR (13.0s) — direct much faster
+#   DeepSeek: None — use OpenRouter only
+#   GLM: z.ai direct (2.6s) vs OR (9.8s) — direct much faster
 COUNCIL = [
-    ("Gemini", "google/gemini-3.1-pro-preview", ("google", "gemini-2.5-pro")),
-    ("Grok", "x-ai/grok-4", None),
-    ("DeepSeek", "deepseek/deepseek-r1", None),
-    ("GLM", "z-ai/glm-5", None),
     ("GPT", "openai/gpt-5.2-pro", None),
+    ("Claude", "anthropic/claude-opus-4-6", ("anthropic", "claude-sonnet-4-6")),
+    ("Grok-4.20\u03B2", "x-ai/grok-4", ("xai", "grok-4.20-experimental-beta-0304-reasoning")),
+    ("DeepSeek", "deepseek/deepseek-v3.2", None),
+    ("GLM", "z-ai/glm-5", ("zhipu", "glm-5")),
 ]
 
-# Claude is judge-only (not in council) to avoid conflict of interest
-JUDGE_MODEL = "anthropic/claude-opus-4-6"
-# Critique model for CollabEval phase 2 (strongest analytical reasoner, not Claude)
-CRITIQUE_MODEL = "google/gemini-3.1-pro-preview"
+# Gemini is judge (not in council) — avoids judge self-bias
+JUDGE_MODEL = "google/gemini-3.1-pro-preview"
+# Critique model for CollabEval phase 2
+CRITIQUE_MODEL = "anthropic/claude-sonnet-4-6"
 # Classification model for auto-routing — Opus for accuracy since this gates mode selection
-CLASSIFIER_MODEL = JUDGE_MODEL
+CLASSIFIER_MODEL = "anthropic/claude-opus-4-6"
+# Compression model for context between rounds
+COMPRESSION_MODEL = "meta-llama/llama-3.3-70b-instruct"
+# Default xAI model slug (used by resolved_council and --grok flag)
+XAI_DEFAULT_MODEL = "grok-4.20-experimental-beta-0304-reasoning"
 
-# Quick mode: council models + Claude (no judge conflict in quick mode)
-QUICK_MODELS = [("Claude", JUDGE_MODEL, None)] + [(n, m, fb) for n, m, fb in COUNCIL]
+# Env var names for model overrides
+CONSILIUM_MODEL_M1_ENV = "CONSILIUM_MODEL_M1"
+CONSILIUM_MODEL_M2_ENV = "CONSILIUM_MODEL_M2"
+CONSILIUM_MODEL_M3_ENV = "CONSILIUM_MODEL_M3"
+CONSILIUM_MODEL_M4_ENV = "CONSILIUM_MODEL_M4"
+CONSILIUM_MODEL_M5_ENV = "CONSILIUM_MODEL_M5"
+CONSILIUM_MODEL_JUDGE_ENV = "CONSILIUM_MODEL_JUDGE"
+CONSILIUM_MODEL_CRITIQUE_ENV = "CONSILIUM_MODEL_CRITIQUE"
+CONSILIUM_XAI_MODEL_ENV = "CONSILIUM_XAI_MODEL"
+GLM_MAX_TOKENS_ENV = "GLM_MAX_TOKENS"
 
-# Discussion mode: 3 panelists + Claude as host
-DISCUSS_MODELS = COUNCIL[:3]  # GPT, Gemini, Grok
-DISCUSS_HOST = JUDGE_MODEL     # Claude hosts
+# Quick mode: judge + council (no judge conflict in quick mode)
+QUICK_MODELS = [("Gemini", JUDGE_MODEL, None)] + [(n, m, fb) for n, m, fb in COUNCIL]
 
-# Red team mode: same 3-model panel, Claude hosts
-REDTEAM_MODELS = COUNCIL[:3]  # GPT, Gemini, Grok
+# Discussion mode: first 3 council panelists
+DISCUSS_MODELS = COUNCIL[:3]  # GPT, Claude, Grok
+DISCUSS_HOST = "anthropic/claude-opus-4-6"  # Claude hosts
 
-# Oxford debate: 2 debaters, Claude judges
-OXFORD_MODELS = COUNCIL[:2]  # GPT, Gemini
+# Red team mode: same 3-model panel
+REDTEAM_MODELS = COUNCIL[:3]  # GPT, Claude, Grok
+
+# Oxford debate: first 2 debaters
+OXFORD_MODELS = COUNCIL[:2]  # GPT, Claude
 
 # Thinking models - use non-streaming, higher tokens, longer timeout
 THINKING_MODEL_SUFFIXES = {
@@ -57,7 +84,7 @@ THINKING_MODEL_SUFFIXES = {
     "gpt-5.2-pro", "gpt-5.2",
     "gemini-3.1-pro-preview",
     "grok-4",
-    "deepseek-r1",
+    "deepseek-r1", "deepseek-v3.2",
     "glm-5",
 }
 
@@ -76,7 +103,199 @@ EXTRACTION_MODEL = "anthropic/claude-haiku-4-5"
 def is_thinking_model(model: str) -> bool:
     """Check if model is a thinking model that doesn't stream well."""
     model_name = model.split("/")[-1].lower()
-    return model_name in THINKING_MODEL_SUFFIXES
+    return (
+        model_name in THINKING_MODEL_SUFFIXES
+        or model_name.startswith("grok-4.2")  # covers all grok-4.20+ beta variants
+    )
+
+
+def model_max_output_tokens(model: str) -> int:
+    """Return the known maximum output tokens for each model family."""
+    m = model.lower()
+    if "gemini-2.5" in m or "gemini-3" in m:
+        return 65536
+    if "gemini" in m:
+        return 8192
+    if "claude" in m or "anthropic" in m:
+        return 32000
+    if "gpt" in m or "openai" in m or "deepseek" in m:
+        return 16384
+    if "grok" in m or "xai" in m:
+        return 32768
+    if "kimi" in m or "moonshot" in m:
+        return 16384
+    if "glm" in m or "zhipu" in m:
+        return 16000
+    return 8192  # default fallback
+
+
+def per_model_max_tokens(model: str, default: int) -> int:
+    """Resolve per-model token budget overrides."""
+    if "glm" in model.lower():
+        val = _env_override(GLM_MAX_TOKENS_ENV)
+        if val is not None:
+            try:
+                n = int(val)
+                if n > 0:
+                    return n
+            except ValueError:
+                pass
+        return 16000
+    return default
+
+
+def _env_override(var: str) -> str | None:
+    """Read an env var, returning None for empty/unset."""
+    val = os.environ.get(var, "").strip()
+    return val if val else None
+
+
+def _normalize_model_override(value: str) -> str:
+    """Resolve short aliases (sonnet, opus, gemini) to full model IDs."""
+    trimmed = value.strip()
+    match trimmed.lower():
+        case "sonnet":
+            return "anthropic/claude-sonnet-4-6"
+        case "opus":
+            return "anthropic/claude-opus-4-6"
+        case "gemini":
+            return "google/gemini-3.1-pro-preview"
+        case _:
+            return trimmed
+
+
+def _display_name_from_model(model_id: str) -> str:
+    """Generate a display name from a model ID (e.g. 'openai/gpt-5.2-pro' -> 'GPT-5.2-Pro')."""
+    model_name = model_id.rsplit("/", 1)[-1]
+    model_name = model_name.removesuffix("-preview")
+
+    special = {"gpt": "GPT", "glm": "GLM", "deepseek": "DeepSeek"}
+    parts = [p for p in model_name.split("-") if p]
+    result = []
+    for part in parts:
+        low = part.lower()
+        if low in special:
+            result.append(special[low])
+        else:
+            result.append(part[0].upper() + part[1:] if part else "")
+    return "-".join(result)
+
+
+def _xai_model_label(model: str) -> str:
+    """Short display label for xAI model slugs (condenses verbose beta names)."""
+    if "4.20" in model:
+        suffix = "-NR" if "non-reasoning" in model else ""
+        return f"Grok-4.20\u03B2{suffix}"
+    return _display_name_from_model(model)
+
+
+def resolved_council() -> list[tuple[str, str, tuple[str, str] | None]]:
+    """Resolve council models at runtime, applying env var overrides.
+
+    This is the runtime source of truth for council composition.
+    The COUNCIL constant is the default fallback.
+    """
+    # M1: GPT
+    m1 = _env_override(CONSILIUM_MODEL_M1_ENV) or "openai/gpt-5.2-pro"
+    m1_name = _display_name_from_model(m1)
+
+    # M2: Claude
+    m2 = _env_override(CONSILIUM_MODEL_M2_ENV) or "anthropic/claude-opus-4-6"
+    m2_name = _display_name_from_model(m2)
+
+    # M3: Grok
+    m3 = _env_override(CONSILIUM_MODEL_M3_ENV) or "x-ai/grok-4"
+    xai_model = _env_override(CONSILIUM_XAI_MODEL_ENV) or XAI_DEFAULT_MODEL
+    m3_name = _xai_model_label(xai_model)
+
+    # M4: DeepSeek
+    m4 = _env_override(CONSILIUM_MODEL_M4_ENV) or "deepseek/deepseek-v3.2"
+    m4_name = _display_name_from_model(m4)
+
+    # M5: GLM
+    m5_fallback = _env_override(CONSILIUM_MODEL_M5_ENV) or "glm-5"
+    m5_name = _display_name_from_model("z-ai/glm-5")
+
+    return [
+        (m1_name, m1, None),
+        (m2_name, m2, ("anthropic", "claude-sonnet-4-6")),
+        (m3_name, m3, ("xai", xai_model)),
+        (m4_name, m4, None),
+        (m5_name, "z-ai/glm-5", ("zhipu", m5_fallback)),
+    ]
+
+
+def resolved_judge_model(cli_override: str | None = None) -> str:
+    """Resolve judge model at runtime, applying CLI and env var overrides."""
+    if cli_override:
+        return _normalize_model_override(cli_override)
+    env = _env_override(CONSILIUM_MODEL_JUDGE_ENV)
+    if env:
+        return _normalize_model_override(env)
+    return JUDGE_MODEL
+
+
+def resolved_critique_model(cli_override: str | None = None) -> str:
+    """Resolve critique model at runtime, applying CLI and env var overrides."""
+    if cli_override:
+        return _normalize_model_override(cli_override)
+    env = _env_override(CONSILIUM_MODEL_CRITIQUE_ENV)
+    if env:
+        return _normalize_model_override(env)
+    return CRITIQUE_MODEL
+
+
+def quick_models() -> list[tuple[str, str, tuple[str, str] | None]]:
+    """Quick mode: judge + council models (no judge conflict in quick mode)."""
+    judge = resolved_judge_model()
+    judge_label = _display_name_from_model(judge)
+    models: list[tuple[str, str, tuple[str, str] | None]] = [(judge_label, judge, None)]
+    models.extend((n, m, fb) for n, m, fb in resolved_council() if m != judge)
+    return models
+
+
+def discuss_models() -> list[tuple[str, str, tuple[str, str] | None]]:
+    """Discussion mode: first 3 council models."""
+    return resolved_council()[:3]
+
+
+def redteam_models() -> list[tuple[str, str, tuple[str, str] | None]]:
+    """Red team mode: first 3 council models."""
+    return resolved_council()[:3]
+
+
+def oxford_models() -> list[tuple[str, str, tuple[str, str] | None]]:
+    """Oxford debate: first 2 council models."""
+    return resolved_council()[:2]
+
+
+def is_error_response(content: str) -> bool:
+    """Check if a response is an error string rather than real content."""
+    return (
+        not content
+        or (
+            content.startswith("[")
+            and (
+                content.startswith("[Error:")
+                or content.startswith("[No response")
+                or content.startswith("[Model still thinking")
+            )
+        )
+    )
+
+
+def fallback_also_failed_message(name: str, primary: str, fallback: str) -> str:
+    """Build diagnostic when both primary and fallback attempts fail."""
+    return f"[Fallback also failed for {name}: primary={primary}, fallback={fallback}]"
+
+
+def sanitize_speaker_content(content: str) -> str:
+    """Sanitize speaker content to prevent prompt injection."""
+    sanitized = content.replace("SYSTEM:", "[SYSTEM]:")
+    sanitized = sanitized.replace("INSTRUCTION:", "[INSTRUCTION]:")
+    sanitized = sanitized.replace("IGNORE PREVIOUS", "[IGNORE PREVIOUS]")
+    sanitized = sanitized.replace("OVERRIDE:", "[OVERRIDE]:")
+    return sanitized
 
 
 def detect_social_context(question: str) -> bool:
@@ -556,30 +775,14 @@ def parse_confidence(response: str) -> int | None:
     return None
 
 
-def is_error_response(content: str) -> bool:
-    """Check if a response is an error string rather than real content."""
-    return bool(content and content.startswith("[") and (
-        content.startswith("[Error:") or
-        content.startswith("[No response") or
-        content.startswith("[Model still thinking")
-    ))
-
-
-def sanitize_speaker_content(content: str) -> str:
-    """Sanitize speaker content to prevent prompt injection."""
-    sanitized = content.replace("SYSTEM:", "[SYSTEM]:")
-    sanitized = sanitized.replace("INSTRUCTION:", "[INSTRUCTION]:")
-    sanitized = sanitized.replace("IGNORE PREVIOUS", "[IGNORE PREVIOUS]")
-    sanitized = sanitized.replace("OVERRIDE:", "[OVERRIDE]:")
-    return sanitized
 
 
 # Brand name aliases for each council model — used to scrub judge transcript
 _BRAND_ALIASES: dict[str, list[str]] = {
     "GPT":      ["GPT", "OpenAI", "ChatGPT", "gpt-5", "gpt-4", "gpt 5", "gpt 4"],
-    "Gemini":   ["Gemini", "Google", "Bard", "gemini-3", "gemini-2", "gemini 3", "gemini 2"],
-    "Grok":     ["Grok", "xAI", "x.ai", "grok-4", "grok 4"],
-    "DeepSeek": ["DeepSeek", "deepseek-r1", "deepseek r1"],
+    "Claude":   ["Claude", "Anthropic", "claude-opus", "claude-sonnet", "claude 4", "claude opus"],
+    "Grok-4.20\u03B2": ["Grok", "xAI", "x.ai", "grok-4", "grok 4"],
+    "DeepSeek": ["DeepSeek", "deepseek-r1", "deepseek r1", "deepseek-v3", "deepseek v3"],
     "GLM":      ["GLM", "Zhipu", "ChatGLM", "glm-5", "glm 5", "zhipuai"],
 }
 
@@ -600,8 +803,8 @@ def anonymise_for_judge(
         speaker_alias = display_names.get(name, name)
         aliases = _BRAND_ALIASES.get(name, [name])
         for alias in aliases:
-            # Word boundary match, case-insensitive
-            pattern = r'\b' + re.escape(alias) + r'\b'
+            # Word boundary match, case-insensitive; skip terms inside URLs (after /)
+            pattern = r'(?<![/.\w])' + re.escape(alias) + r'\b'
             text = re.sub(pattern, speaker_alias, text, flags=re.IGNORECASE)
     return text
 
