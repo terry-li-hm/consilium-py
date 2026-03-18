@@ -101,7 +101,17 @@ async def run_blind_phase_parallel(
     sub_questions: list[str] | None = None,
     cost_accumulator: list[float] | None = None,
 ) -> list[tuple[str, str, str]]:
-    """Parallel blind first-pass: all models stake claims simultaneously."""
+    """Parallel blind first-pass: all models stake claims simultaneously.
+
+    Truly parallel — asyncio.gather() fires all model queries before any response
+    arrives. No model sees another's claim during this phase. The blind phase is
+    structurally independent: each model receives an identical prompt with no prior
+    model output in context.
+
+    Result ordering: run_parallel() sorts results by original COUNCIL index before
+    returning, so the list is always in COUNCIL order regardless of which model
+    responds first. Arrival order can vary run-to-run (confirms true parallelism).
+    """
     blind_system = COUNCIL_BLIND_SYSTEM
 
     if domain_context:
@@ -176,6 +186,10 @@ async def run_xpol_phase_parallel(
         print("=" * 60)
         print()
 
+    # Speaker numbering uses i+1 over blind_claims, which is always in COUNCIL order
+    # (guaranteed by run_parallel's indexed_results.sort()). This is consistent with
+    # display_names mapping. Xpol is INTENDED to be cross-contaminating: models should
+    # see all blind claims here. That's the point of this phase.
     blind_summary = "\n\n".join(
         f"**Speaker {i+1}**: {claims}" for i, (_, _, claims) in enumerate(blind_claims)
         if not is_error_response(claims)
@@ -407,6 +421,10 @@ def run_council(
         if xpol_lines:
             xpol_context = "\n\n".join(xpol_lines)
 
+    # Debate rounds are intentionally sequential — each model builds on prior speakers'
+    # responses within the round. This is distinct from the blind phase (run_parallel, truly
+    # concurrent) and is correct by design: sequencing creates responsive deliberation.
+    # Do NOT parallelise this loop; doing so would break the cross-model dialogue structure.
     for round_num in range(rounds):
         current_round = round_num + 1
         round_speakers = []
